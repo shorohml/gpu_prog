@@ -115,7 +115,7 @@ void compute_cdf(
     }
 }
 
-void equalize(
+void equalize_ycbcr(
     unsigned char* ycbcr_img,
     const double* cdf,
     const int width,
@@ -130,4 +130,38 @@ void equalize(
             ycbcr_img[i0] = 219 * cdf[ycbcr_img[i0]] + 16;
         }
     }
+}
+
+void equalize_rgb(
+    unsigned char* rgb_img,
+    unsigned char* ycbcr_img,
+    const int width,
+    const int height)
+{
+    unsigned int hist[256];
+    double cdf[256];
+
+    rgb_to_ycbcr(
+        rgb_img,
+        ycbcr_img,
+        width,
+        height);
+    compute_hist(
+        ycbcr_img,
+        hist,
+        width,
+        height);
+    compute_cdf(
+        hist,
+        cdf);
+    equalize_ycbcr(
+        ycbcr_img,
+        cdf,
+        width,
+        height);
+    ycbcr_to_rgb(
+        ycbcr_img,
+        rgb_img,
+        width,
+        height);
 }

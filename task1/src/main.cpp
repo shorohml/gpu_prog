@@ -11,8 +11,6 @@ int main(int argc, char** argv)
 {
     int width, height, channels;
     unsigned char *rgb_img, *ycbcr_img;
-    unsigned int hist[256];
-    double cdf[256];
 
     if (4 != argc) {
         std::cerr << "Usage: ./main in_path out_path" << std::endl;
@@ -24,7 +22,7 @@ int main(int argc, char** argv)
         &width,
         &height,
         &channels,
-        STBI_rgb);
+        3);
     if (NULL == rgb_img) {
         std::cerr << "Failed to load image" << std::endl;
         return 1;
@@ -40,31 +38,11 @@ int main(int argc, char** argv)
     omp_set_num_threads(std::atoi(argv[3]));
 
     double start = omp_get_wtime();
-
-    rgb_to_ycbcr(
+    equalize_rgb(
         rgb_img,
         ycbcr_img,
         width,
         height);
-    compute_hist(
-        ycbcr_img,
-        hist,
-        width,
-        height);
-    compute_cdf(
-        hist,
-        cdf);
-    equalize(
-        ycbcr_img,
-        cdf,
-        width,
-        height);
-    ycbcr_to_rgb(
-        ycbcr_img,
-        rgb_img,
-        width,
-        height);
-
     double end = omp_get_wtime();
 
     std::cout << end - start << std::endl;

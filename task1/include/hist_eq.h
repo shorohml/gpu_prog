@@ -22,8 +22,14 @@ void compute_cdf(
     const unsigned int* hist,
     double* cdf);
 
-void equalize(
+void equalize_ycbcr(
     unsigned char* ycbcr_img,
     const double* cdf,
+    const int width,
+    const int height);
+
+void equalize_rgb(
+    unsigned char* rgb_img,
+    unsigned char* ycbcr_img,
     const int width,
     const int height);
