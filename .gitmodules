@@ -1,0 +1,3 @@
+[submodule "task1/external/stb"]
+	path = task1/external/stb
+	url = https://github.com/nothings/stb.git
