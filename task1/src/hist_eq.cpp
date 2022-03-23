@@ -1,6 +1,7 @@
 #include "hist_eq.h"
 #include <algorithm>
 #include <omp.h>
+#include <iostream>
 
 namespace {
 template <typename T>
@@ -151,6 +152,11 @@ void equalize_rgb(
         hist,
         width,
         height);
+    
+    for (int i = 0; i < 256; ++i) {
+        std::cout << hist[i] << std::endl;
+    }
+
     compute_cdf(
         hist,
         cdf);
