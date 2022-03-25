@@ -69,7 +69,6 @@ __global__ void histogram(uchar *y_img, uint *hist, int size)
         uchar *thread_shared_hist = shared_hist + idx;
 
         uint sum = 0;
-
         for (uint i = 0; i < SHARED_S; i += HIST_SIZE) {
             sum += thread_shared_hist[i];
         }
