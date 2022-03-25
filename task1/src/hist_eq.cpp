@@ -152,10 +152,6 @@ void equalize_rgb(
         hist,
         width,
         height);
-    
-    for (int i = 0; i < 256; ++i) {
-        std::cout << hist[i] << std::endl;
-    }
 
     compute_cdf(
         hist,

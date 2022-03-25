@@ -7,15 +7,10 @@
 #include <stb_image_write.h>
 
 
-#define NUM_WARPS 32
-#define WARP_SIZE 32
-#define THREADS_IN_BLOCK NUM_WARPS * WARP_SIZE
-#define SHARED_MEM_SIZE NUM_WARPS * 256
-
-#define HISTOGRAM_LENGTH 256
-#define BLOCK_SIZE 256
-#define SCAN_SIZE (2*BLOCK_SIZE)
-
+#define N_THREADS_PER_BLOCK 192
+#define HIST_SIZE 256
+#define SHARED_S N_THREADS_PER_BLOCK * HIST_SIZE
+#define MERGE_THREADBLOCK_SIZE 256
 #define uchar unsigned char
 
 
@@ -61,13 +56,6 @@ __global__ void ycbcr_to_rgb(uchar *y_img, uchar *cb_img, uchar *cr_img, uchar3 
     rgb[i].y = clamp(g, 0., 255.);
     rgb[i].z = clamp(b, 0., 255.);
 }
-
-
-#define N_THREADS_PER_BLOCK 192
-#define HIST_SIZE 256
-#define SHARED_S N_THREADS_PER_BLOCK * HIST_SIZE
-#define SHARED_MEMORY_BANKS 16
-#define MERGE_THREADBLOCK_SIZE 256
 
 
 __global__ void histogram(uchar *y_img, uint *hist, int size)
@@ -134,33 +122,33 @@ __global__ void calcCDF(
         float *cdf,
         uint *hist,
 	    int size) {
-	__shared__ float cdf_shared[256];
+	__shared__ float cdf_shared[HIST_SIZE];
 	int i = blockDim.x * blockIdx.x + threadIdx.x;
 
-	if (i < 256) {
+	if (i < HIST_SIZE) {
         cdf_shared[i] = (float)hist[i] / (float)(size);
     }
 
     __syncthreads();
 
-	for (uint stride = 1; stride <= BLOCK_SIZE; stride *= 2) {
+	for (uint stride = 1; stride <= HIST_SIZE; stride *= 2) {
 		uint index = (threadIdx.x + 1) * stride * 2 - 1;
-		if (index < 256)
+		if (index < HIST_SIZE)
 			cdf_shared[index] += cdf_shared[index - stride];
 		__syncthreads();
 	}
 
-	for (uint stride = BLOCK_SIZE / 2; stride > 0; stride /= 2) {
+	for (uint stride = HIST_SIZE / 2; stride > 0; stride /= 2) {
 		__syncthreads();
 		uint index = (threadIdx.x + 1) * stride * 2 - 1;
-		if (index + stride < 256) {
+		if (index + stride < HIST_SIZE) {
 			cdf_shared[index + stride] += cdf_shared[index];
 		}
 	}
 
 	__syncthreads();
 
-	if (i < 256) {
+	if (i < HIST_SIZE) {
 		cdf[i] = cdf_shared[threadIdx.x];
     }
 }
@@ -203,6 +191,7 @@ int main(int argc, char** argv)
     uchar3 *rgb_img_gpu;
     uchar *y_gpu, *cb_gpu, *cr_gpu;
     uint *hist_gpu, *block_hist_gpu;
+    float *cdf;
 
     if (4 != argc) {
         std::cerr << "Usage: ./main in_path out_path" << std::endl;
@@ -228,20 +217,6 @@ int main(int argc, char** argv)
         return 1;
     }
 
-    int dev = 0;
-
-    checkCudaErrors(cudaMalloc((void **)&rgb_img_gpu, width * height * 3));
-    checkCudaErrors(cudaMalloc((void **)&y_gpu, width * height));
-    checkCudaErrors(cudaMalloc((void **)&cb_gpu, width * height));
-    checkCudaErrors(cudaMalloc((void **)&cr_gpu, width * height));
-    checkCudaErrors(cudaMalloc((void **)&hist_gpu, 256 * sizeof(uint)));
-
-    checkCudaErrors(cudaMemcpy(rgb_img_gpu, rgb_img, width * height * 3, cudaMemcpyHostToDevice));
-
-    // dim3 threadsPerBlock(32, 32);
-    // dim3 blocksPerGrid((width + threadsPerBlock.x - 1) / threadsPerBlock.x,
-    //                    (height + threadsPerBlock.y - 1) / threadsPerBlock.y);
-
     float time;
     cudaEvent_t start, stop;
 
@@ -249,41 +224,29 @@ int main(int argc, char** argv)
     cudaEventCreate(&stop);
     cudaEventRecord(start, 0);
 
-	dim3 dimBlock(BLOCK_SIZE);
-	dim3 dimGrid(((width * height) - 1) / BLOCK_SIZE + 1);
+    checkCudaErrors(cudaMalloc((void **)&rgb_img_gpu, width * height * 3));
+    checkCudaErrors(cudaMalloc((void **)&y_gpu, width * height));
+    checkCudaErrors(cudaMalloc((void **)&cb_gpu, width * height));
+    checkCudaErrors(cudaMalloc((void **)&cr_gpu, width * height));
+    checkCudaErrors(cudaMalloc((void **)&hist_gpu, HIST_SIZE * sizeof(uint)));
+    checkCudaErrors(cudaMalloc((void **)&cdf, HIST_SIZE * sizeof(float)));
+
+    checkCudaErrors(cudaMemcpy(rgb_img_gpu, rgb_img, width * height * 3, cudaMemcpyHostToDevice));
+
+	dim3 dimBlock(N_THREADS_PER_BLOCK);
+	dim3 dimGrid(((width * height) - 1) / N_THREADS_PER_BLOCK + 1);
 	dim3 dimBlockHist(HIST_SIZE);
 	dim3 dimGridHist(1);
-
-    rgb_to_ycbcr<<<dimGrid, dimBlock>>>(rgb_img_gpu, y_gpu, cb_gpu, cr_gpu, width * height);
-
-    cudaMemset(hist_gpu, 0, HIST_SIZE * sizeof(uint));
-
 	dim3 dimBlockH(N_THREADS_PER_BLOCK);
-	dim3 dimGridH(((width * height) - 1) / (N_THREADS_PER_BLOCK * 255) + 1);
-	// dim3 dimGridH(((width * height) - 1) / N_THREADS_PER_BLOCK + 1);
+	dim3 dimGridH(((width * height) - 1) / (N_THREADS_PER_BLOCK * (HIST_SIZE - 1)) + 1);
 
     checkCudaErrors(cudaMalloc((void **)&block_hist_gpu, dimGridH.x * HIST_SIZE * sizeof(uint)));
 
-    // histogram<<<dimGridH, dimBlockH>>>(y_gpu, hist_gpu, width * height);
+    rgb_to_ycbcr<<<dimGrid, dimBlock>>>(rgb_img_gpu, y_gpu, cb_gpu, cr_gpu, width * height);
 
     histogram<<<dimGridH, dimBlockH>>>(y_gpu, block_hist_gpu, width * height);
 
     merge_block_histograms<<<HIST_SIZE, MERGE_THREADBLOCK_SIZE>>>(hist_gpu, block_hist_gpu, dimGridH.x);
-
-    uint hist[HIST_SIZE];
-
-    cudaMemcpy(hist, hist_gpu, HIST_SIZE * sizeof(uint), cudaMemcpyDeviceToHost);
-
-    checkCudaErrors(cudaDeviceSynchronize());
-
-    for (int i = 0; i < HIST_SIZE; ++i) {
-        std::cout << hist[i] << std::endl;
-    }
-
-    checkCudaErrors(cudaDeviceSynchronize());
-
-    float *cdf;
-    checkCudaErrors(cudaMalloc((void **)&cdf, HIST_SIZE * sizeof(float)));
 
     calcCDF<<<dimGridHist, dimBlockHist>>>(cdf, hist_gpu, width * height);
 
@@ -291,15 +254,15 @@ int main(int argc, char** argv)
 
     ycbcr_to_rgb<<<dimGrid, dimBlock>>>(y_gpu, cb_gpu, cr_gpu, rgb_img_gpu, width * height);
 
+    cudaMemcpy(rgb_img, rgb_img_gpu, width * height * 3, cudaMemcpyDeviceToHost);
+
+    checkCudaErrors(cudaDeviceSynchronize());
+
     cudaEventRecord(stop, 0);
     cudaEventSynchronize(stop);
     cudaEventElapsedTime(&time, start, stop);
 
     printf("Time to generate:  %f s \n", time / 1000);
-
-    cudaMemcpy(rgb_img, rgb_img_gpu, width * height * 3, cudaMemcpyDeviceToHost);
-
-    checkCudaErrors(cudaDeviceSynchronize());
 
     stbi_write_png(
         argv[2],
