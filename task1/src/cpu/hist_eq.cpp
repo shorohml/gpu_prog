@@ -1,7 +1,7 @@
 #include "cpu/hist_eq.h"
 #include <algorithm>
-#include <omp.h>
 #include <iostream>
+#include <omp.h>
 
 namespace {
 template <typename T>

@@ -192,4 +192,12 @@ void equalize_histogram(
     ycbcr_to_rgb<<<dimGrid, dimBlock>>>(y_gpu, cb_gpu, cr_gpu, rgb_gpu, width * height);
 
     cudaMemcpy(rgb_cpu, rgb_gpu, width * height * 3, cudaMemcpyDeviceToHost);
+
+    checkCudaErrors(cudaFree(rgb_gpu));
+    checkCudaErrors(cudaFree(y_gpu));
+    checkCudaErrors(cudaFree(cb_gpu));
+    checkCudaErrors(cudaFree(cr_gpu));
+    checkCudaErrors(cudaFree(cdf_gpu));
+    checkCudaErrors(cudaFree(hist_gpu));
+    checkCudaErrors(cudaFree(block_hist_gpu));
 }
