@@ -26,7 +26,7 @@ add_subdirectory(external)
 
 set(SOURCE_FILES_CPU
     src/main_cpu.cpp
-    src/hist_eq.cpp)
+    src/cpu/hist_eq.cpp)
 
 add_executable(main_cpu ${SOURCE_FILES_CPU})
 
@@ -61,7 +61,8 @@ include(CheckLanguage)
 check_language(CUDA)
 
 set(SOURCE_FILES_GPU
-    src/main_gpu.cu)
+    src/gpu/hist_eq.cu
+    src/main_gpu.cpp)
 
 cuda_add_executable(main_gpu ${SOURCE_FILES_GPU})
 
@@ -77,8 +78,8 @@ target_include_directories(main_gpu
 #    ${CUDA_LIBRARIES}
 # )
 
-# set_target_properties(main_gpu PROPERTIES
-#                            CUDA_SEPARABLE_COMPILATION ON)
+set_target_properties(main_gpu PROPERTIES
+                      CUDA_SEPARABLE_COMPILATION ON)
 
 # set(CUDA_LINK_LIBRARIES_KEYWORD PUBLIC)
 

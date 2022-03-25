@@ -1,17 +1,5 @@
-#include <fstream>
-#include <iostream>
-#define STB_IMAGE_IMPLEMENTATION
-#include <stb_image.h>
-#define STB_IMAGE_WRITE_IMPLEMENTATION
 #include <cuda_runtime.h>
-#include <stb_image_write.h>
-
-
-#define N_THREADS_PER_BLOCK 192
-#define HIST_SIZE 256
-#define SHARED_S N_THREADS_PER_BLOCK * HIST_SIZE
-#define MERGE_THREADBLOCK_SIZE 256
-#define uchar unsigned char
+#include "gpu/hist_eq.h"
 
 
 __device__ float clamp(float x, float a, float b)
@@ -165,73 +153,15 @@ __global__ void equalize(uchar *y_img, float *cdf, int size)
 }
 
 
-static const char *_cudaGetErrorEnum(cudaError_t error) {
-    return cudaGetErrorName(error);
-}
-
-
-template <typename T>
-void check(T result, char const *const func, const char *const file,
-           int const line) {
-    if (result) {
-        fprintf(stderr, "CUDA error at %s:%d code=%d(%s) \"%s\" \n", file, line,
-                static_cast<uint>(result), _cudaGetErrorEnum(result), func);
-        exit(EXIT_FAILURE);
-    }
-}
-
-
-#define checkCudaErrors(val) check((val), #val, __FILE__, __LINE__)
-
-
-int main(int argc, char** argv)
+void equalize_histogram(
+        uchar *rgb_cpu,
+        int width,
+        int height)
 {
-    int width, height, channels;
-    unsigned char *rgb_img;
-    uchar3 *rgb_img_gpu;
-    uchar *y_gpu, *cb_gpu, *cr_gpu;
     uint *hist_gpu, *block_hist_gpu;
-    float *cdf;
-
-    if (4 != argc) {
-        std::cerr << "Usage: ./main in_path out_path" << std::endl;
-        return 1;
-    }
-
-    rgb_img = stbi_load(
-        argv[1],
-        &width,
-        &height,
-        &channels,
-        3);
-    if (NULL == rgb_img) {
-        std::cerr << "Failed to load image" << std::endl;
-        return 1;
-    }
-
-    int device_count;
-    cudaGetDeviceCount(&device_count);
-    
-    if (0 == device_count) {
-        std::cerr << "No CUDA device found" << std::endl;
-        return 1;
-    }
-
-    float time;
-    cudaEvent_t start, stop;
-
-    cudaEventCreate(&start);
-    cudaEventCreate(&stop);
-    cudaEventRecord(start, 0);
-
-    checkCudaErrors(cudaMalloc((void **)&rgb_img_gpu, width * height * 3));
-    checkCudaErrors(cudaMalloc((void **)&y_gpu, width * height));
-    checkCudaErrors(cudaMalloc((void **)&cb_gpu, width * height));
-    checkCudaErrors(cudaMalloc((void **)&cr_gpu, width * height));
-    checkCudaErrors(cudaMalloc((void **)&hist_gpu, HIST_SIZE * sizeof(uint)));
-    checkCudaErrors(cudaMalloc((void **)&cdf, HIST_SIZE * sizeof(float)));
-
-    checkCudaErrors(cudaMemcpy(rgb_img_gpu, rgb_img, width * height * 3, cudaMemcpyHostToDevice));
+    uchar3 *rgb_gpu;
+    uchar *y_gpu, *cb_gpu, *cr_gpu;
+    float *cdf_gpu;
 
 	dim3 dimBlock(N_THREADS_PER_BLOCK);
 	dim3 dimGrid(((width * height) - 1) / N_THREADS_PER_BLOCK + 1);
@@ -240,38 +170,27 @@ int main(int argc, char** argv)
 	dim3 dimBlockH(N_THREADS_PER_BLOCK);
 	dim3 dimGridH(((width * height) - 1) / (N_THREADS_PER_BLOCK * (HIST_SIZE - 1)) + 1);
 
+    checkCudaErrors(cudaMalloc((void**)&rgb_gpu, width * height * 3));
+    checkCudaErrors(cudaMalloc((void**)&y_gpu, width * height));
+    checkCudaErrors(cudaMalloc((void**)&cb_gpu, width * height));
+    checkCudaErrors(cudaMalloc((void**)&cr_gpu, width * height));
+    checkCudaErrors(cudaMalloc((void**)&cdf_gpu, HIST_SIZE * sizeof(float)));
+    checkCudaErrors(cudaMalloc((void**)&hist_gpu, HIST_SIZE * sizeof(uint)));
     checkCudaErrors(cudaMalloc((void **)&block_hist_gpu, dimGridH.x * HIST_SIZE * sizeof(uint)));
 
-    rgb_to_ycbcr<<<dimGrid, dimBlock>>>(rgb_img_gpu, y_gpu, cb_gpu, cr_gpu, width * height);
+    checkCudaErrors(cudaMemcpy(rgb_gpu, rgb_cpu, width * height * 3, cudaMemcpyHostToDevice));
+
+    rgb_to_ycbcr<<<dimGrid, dimBlock>>>(rgb_gpu, y_gpu, cb_gpu, cr_gpu, width * height);
 
     histogram<<<dimGridH, dimBlockH>>>(y_gpu, block_hist_gpu, width * height);
 
     merge_block_histograms<<<HIST_SIZE, MERGE_THREADBLOCK_SIZE>>>(hist_gpu, block_hist_gpu, dimGridH.x);
 
-    calcCDF<<<dimGridHist, dimBlockHist>>>(cdf, hist_gpu, width * height);
+    calcCDF<<<dimGridHist, dimBlockHist>>>(cdf_gpu, hist_gpu, width * height);
 
-    equalize<<<dimGrid, dimBlock>>>(y_gpu, cdf, width * height);
+    equalize<<<dimGrid, dimBlock>>>(y_gpu, cdf_gpu, width * height);
 
-    ycbcr_to_rgb<<<dimGrid, dimBlock>>>(y_gpu, cb_gpu, cr_gpu, rgb_img_gpu, width * height);
+    ycbcr_to_rgb<<<dimGrid, dimBlock>>>(y_gpu, cb_gpu, cr_gpu, rgb_gpu, width * height);
 
-    cudaMemcpy(rgb_img, rgb_img_gpu, width * height * 3, cudaMemcpyDeviceToHost);
-
-    checkCudaErrors(cudaDeviceSynchronize());
-
-    cudaEventRecord(stop, 0);
-    cudaEventSynchronize(stop);
-    cudaEventElapsedTime(&time, start, stop);
-
-    printf("Time to generate:  %f s \n", time / 1000);
-
-    stbi_write_png(
-        argv[2],
-        width,
-        height,
-        3,
-        rgb_img,
-        width * 3);
-
-    stbi_image_free(rgb_img);
-    return 0;
+    cudaMemcpy(rgb_cpu, rgb_gpu, width * height * 3, cudaMemcpyDeviceToHost);
 }

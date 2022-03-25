@@ -1,4 +1,4 @@
-#include "hist_eq.h"
+#include "cpu/hist_eq.h"
 #include <algorithm>
 #include <omp.h>
 #include <iostream>
