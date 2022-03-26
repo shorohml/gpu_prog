@@ -1,5 +1,6 @@
 #include "cpu/hist_eq.h"
 #include <algorithm>
+#include <chrono>
 #include <iostream>
 #include <omp.h>
 
@@ -133,37 +134,45 @@ void equalize_ycbcr(
     }
 }
 
-void equalize_rgb(
-    unsigned char* rgb_img,
-    unsigned char* ycbcr_img,
-    const int width,
-    const int height)
+void EqualizeHistogramCPU::process(Img& rgb_img)
 {
     unsigned int hist[256];
     double cdf[256];
+    const int width = rgb_img.get_width();
+    const int height = rgb_img.get_height();
+    const int channels = rgb_img.get_channels();
+    Img ycbcr_img(
+        width,
+        height,
+        channels);
+
+    auto t1 = std::chrono::high_resolution_clock::now();
 
     rgb_to_ycbcr(
-        rgb_img,
-        ycbcr_img,
+        rgb_img.get_data(),
+        ycbcr_img.get_data(),
         width,
         height);
     compute_hist(
-        ycbcr_img,
+        ycbcr_img.get_data(),
         hist,
         width,
         height);
-
     compute_cdf(
         hist,
         cdf);
     equalize_ycbcr(
-        ycbcr_img,
+        ycbcr_img.get_data(),
         cdf,
         width,
         height);
     ycbcr_to_rgb(
-        ycbcr_img,
-        rgb_img,
+        ycbcr_img.get_data(),
+        rgb_img.get_data(),
         width,
         height);
+
+    auto t2 = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<double, std::milli> ms_double = t2 - t1;
+    _time = ms_double.count();
 }

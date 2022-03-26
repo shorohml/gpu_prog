@@ -24,6 +24,7 @@ find_package(CUDA REQUIRED)
 
 set(SOURCE_FILES_GPU
     src/main.cpp
+    src/img.cpp
     src/cpu/hist_eq.cpp
     src/gpu/hist_eq.cu)
 

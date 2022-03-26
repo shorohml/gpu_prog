@@ -1,4 +1,5 @@
 #include <cuda_runtime.h>
+#include <iostream>
 #include "gpu/hist_eq.h"
 
 
@@ -15,9 +16,9 @@ __global__ void rgb_to_ycbcr(uchar3 *rgb, uchar *y_img, uchar *cb_img, uchar *cr
         return;
     }
 
-    unsigned char r = rgb[i].x;
-    unsigned char g = rgb[i].y;
-    unsigned char b = rgb[i].z;
+    float r = rgb[i].x;
+    float g = rgb[i].y;
+    float b = rgb[i].z;
 
     y_img[i] = 0.257 * r + 0.504 * g + 0.098 * b + 16.0;
     cb_img[i] = -0.148 * r - 0.291 * g + 0.439 * b + 128.0;
@@ -36,17 +37,13 @@ __global__ void ycbcr_to_rgb(uchar *y_img, uchar *cb_img, uchar *cr_img, uchar3 
     float cb = (float)cb_img[i] - 128.;
     float cr = (float)cr_img[i] - 128.;
 
-    float r = 1.164 * y + 1.596 * cr;
-    float g = 1.164 * y - 0.392 * cb - 0.813 * cr;
-    float b = 1.164 * y + 2.017 * cb;
-
-    rgb[i].x = clamp(r, 0., 255.);
-    rgb[i].y = clamp(g, 0., 255.);
-    rgb[i].z = clamp(b, 0., 255.);
+    rgb[i].x = clamp(1.164 * y + 1.596 * cr, 0., 255.);
+    rgb[i].y = clamp(1.164 * y - 0.392 * cb - 0.813 * cr, 0., 255.);
+    rgb[i].z = clamp(1.164 * y + 2.017 * cb, 0., 255.);
 }
 
 
-__global__ void histogram(uchar *y_img, uint *hist, int size)
+__global__ void block_histograms(uchar *y_img, uint *hist, int size)
 {
     __shared__ uchar shared_hist[SHARED_S];
 
@@ -60,7 +57,7 @@ __global__ void histogram(uchar *y_img, uint *hist, int size)
 
     for (uint pos = blockIdx.x * blockDim.x + threadIdx.x; pos < size; pos += blockDim.x * gridDim.x) {
         uchar y = y_img[pos];
-        thread_hist[y] += 1;
+        ++thread_hist[y];
     }
 
     __syncthreads();
@@ -152,15 +149,39 @@ __global__ void equalize(uchar *y_img, float *cdf, int size)
 }
 
 
-void equalize_histogram(
-        uchar *rgb_cpu,
-        int width,
-        int height)
+HistData::HistData(const int width, const int height, const int channels)
 {
-    uint *hist_gpu, *block_hist_gpu;
-    uchar3 *rgb_gpu;
-    uchar *y_gpu, *cb_gpu, *cr_gpu;
-    float *cdf_gpu;
+    uint n_blocks = ((width * height) - 1) / (N_THREADS_PER_BLOCK * (HIST_SIZE - 1)) + 1;
+    checkCudaErrors(cudaMalloc((void**)&rgb_gpu, width * height * channels));
+    checkCudaErrors(cudaMalloc((void**)&y_gpu, width * height));
+    checkCudaErrors(cudaMalloc((void**)&cb_gpu, width * height));
+    checkCudaErrors(cudaMalloc((void**)&cr_gpu, width * height));
+    checkCudaErrors(cudaMalloc((void**)&cdf_gpu, HIST_SIZE * sizeof(float)));
+    checkCudaErrors(cudaMalloc((void**)&hist_gpu, HIST_SIZE * sizeof(uint)));
+    checkCudaErrors(cudaMalloc((void**)&block_hist_gpu, n_blocks * HIST_SIZE * sizeof(uint)));
+}
+
+
+HistData::~HistData()
+{
+    checkCudaErrors(cudaFree(rgb_gpu));
+    checkCudaErrors(cudaFree(y_gpu));
+    checkCudaErrors(cudaFree(cb_gpu));
+    checkCudaErrors(cudaFree(cr_gpu));
+    checkCudaErrors(cudaFree(cdf_gpu));
+    checkCudaErrors(cudaFree(hist_gpu));
+    checkCudaErrors(cudaFree(block_hist_gpu));
+}
+
+
+void EqualizeHistogramGPU::process(Img& rgb_img)
+{
+    cudaEvent_t start_cu_1, stop_cu_1;
+    cudaEvent_t start_cu_2, stop_cu_2;
+
+    const int width = rgb_img.get_width();
+    const int height = rgb_img.get_height();
+    const int channels = rgb_img.get_channels();
 
 	dim3 dimBlock(N_THREADS_PER_BLOCK);
 	dim3 dimGrid(((width * height) - 1) / N_THREADS_PER_BLOCK + 1);
@@ -169,35 +190,68 @@ void equalize_histogram(
 	dim3 dimBlockH(N_THREADS_PER_BLOCK);
 	dim3 dimGridH(((width * height) - 1) / (N_THREADS_PER_BLOCK * (HIST_SIZE - 1)) + 1);
 
-    checkCudaErrors(cudaMalloc((void**)&rgb_gpu, width * height * 3));
-    checkCudaErrors(cudaMalloc((void**)&y_gpu, width * height));
-    checkCudaErrors(cudaMalloc((void**)&cb_gpu, width * height));
-    checkCudaErrors(cudaMalloc((void**)&cr_gpu, width * height));
-    checkCudaErrors(cudaMalloc((void**)&cdf_gpu, HIST_SIZE * sizeof(float)));
-    checkCudaErrors(cudaMalloc((void**)&hist_gpu, HIST_SIZE * sizeof(uint)));
-    checkCudaErrors(cudaMalloc((void **)&block_hist_gpu, dimGridH.x * HIST_SIZE * sizeof(uint)));
+    HistData hist_data(width, height, channels);
 
-    checkCudaErrors(cudaMemcpy(rgb_gpu, rgb_cpu, width * height * 3, cudaMemcpyHostToDevice));
+    cudaEventCreate(&start_cu_1);
+    cudaEventCreate(&stop_cu_1);
+    cudaEventRecord(start_cu_1, 0);
 
-    rgb_to_ycbcr<<<dimGrid, dimBlock>>>(rgb_gpu, y_gpu, cb_gpu, cr_gpu, width * height);
+    checkCudaErrors(cudaMemcpy(
+        hist_data.rgb_gpu,
+        rgb_img.get_data(),
+        width * height * 3,
+        cudaMemcpyHostToDevice));
 
-    histogram<<<dimGridH, dimBlockH>>>(y_gpu, block_hist_gpu, width * height);
+    checkCudaErrors(cudaDeviceSynchronize());
 
-    merge_block_histograms<<<HIST_SIZE, MERGE_THREADBLOCK_SIZE>>>(hist_gpu, block_hist_gpu, dimGridH.x);
+    cudaEventCreate(&start_cu_2);
+    cudaEventCreate(&stop_cu_2);
+    cudaEventRecord(start_cu_2, 0);
 
-    calcCDF<<<dimGridHist, dimBlockHist>>>(cdf_gpu, hist_gpu, width * height);
+    rgb_to_ycbcr<<<dimGrid, dimBlock>>>(
+        hist_data.rgb_gpu,
+        hist_data.y_gpu,
+        hist_data.cb_gpu,
+        hist_data.cr_gpu,
+        width * height);
+    block_histograms<<<dimGridH, dimBlockH>>>(
+        hist_data.y_gpu,
+        hist_data.block_hist_gpu,
+        width * height);
+    merge_block_histograms<<<HIST_SIZE, MERGE_THREADBLOCK_SIZE>>>(
+        hist_data.hist_gpu,
+        hist_data.block_hist_gpu,
+        dimGridH.x);
+    calcCDF<<<dimGridHist, dimBlockHist>>>(
+        hist_data.cdf_gpu,
+        hist_data.hist_gpu,
+        width * height);
+    equalize<<<dimGrid, dimBlock>>>(
+        hist_data.y_gpu,
+        hist_data.cdf_gpu,
+        width * height);
+    ycbcr_to_rgb<<<dimGrid, dimBlock>>>(
+        hist_data.y_gpu,
+        hist_data.cb_gpu,
+        hist_data.cr_gpu,
+        hist_data.rgb_gpu,
+        width * height);
 
-    equalize<<<dimGrid, dimBlock>>>(y_gpu, cdf_gpu, width * height);
+    checkCudaErrors(cudaDeviceSynchronize());
 
-    ycbcr_to_rgb<<<dimGrid, dimBlock>>>(y_gpu, cb_gpu, cr_gpu, rgb_gpu, width * height);
+    cudaEventRecord(stop_cu_2, 0);
+    cudaEventSynchronize(stop_cu_2);
+    cudaEventElapsedTime(&_time_wo_copy, start_cu_2, stop_cu_2);
 
-    cudaMemcpy(rgb_cpu, rgb_gpu, width * height * 3, cudaMemcpyDeviceToHost);
+    checkCudaErrors(cudaMemcpy(
+        rgb_img.get_data(),
+        hist_data.rgb_gpu,
+        width * height * 3,
+        cudaMemcpyDeviceToHost));
 
-    checkCudaErrors(cudaFree(rgb_gpu));
-    checkCudaErrors(cudaFree(y_gpu));
-    checkCudaErrors(cudaFree(cb_gpu));
-    checkCudaErrors(cudaFree(cr_gpu));
-    checkCudaErrors(cudaFree(cdf_gpu));
-    checkCudaErrors(cudaFree(hist_gpu));
-    checkCudaErrors(cudaFree(block_hist_gpu));
+    checkCudaErrors(cudaDeviceSynchronize());
+
+    cudaEventRecord(stop_cu_1, 0);
+    cudaEventSynchronize(stop_cu_1);
+    cudaEventElapsedTime(&_time_w_copy, start_cu_1, stop_cu_1);
 }
