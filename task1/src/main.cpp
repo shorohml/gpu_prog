@@ -5,8 +5,8 @@
 
 int main(int argc, char** argv)
 {
-    if (4 != argc) {
-        std::cerr << "Usage: ./main in_path out_path_cpu out_path_gpu" << std::endl;
+    if (2 != argc) {
+        std::cerr << "Usage: ./main input_image_path" << std::endl;
         return 1;
     }
 
@@ -36,7 +36,7 @@ int main(int argc, char** argv)
     std::cout << "GPU time with copy: " << filter_gpu.get_time_w_copy() << std::endl;
     std::cout << "GPU copy time: " << filter_gpu.get_time_w_copy() - filter_gpu.get_time_wo_copy() << std::endl;
 
-    rgb_img_copy_1.save(argv[2]);
-    rgb_img_copy_2.save(argv[3]);
+    rgb_img_copy_1.save("out_cpu.png");
+    rgb_img_copy_2.save("out_gpu.png");
     return 0;
 }
