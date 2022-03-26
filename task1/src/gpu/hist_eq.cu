@@ -2,8 +2,8 @@
 #include <iostream>
 #include "gpu/hist_eq.h"
 
-
-__device__ float clamp(float x, float a, float b)
+template <typename T>
+__device__ T clamp(T x, T a, T b)
 {
     return max(a, min(b, x));
 }
@@ -16,13 +16,13 @@ __global__ void rgb_to_ycbcr(uchar3 *rgb, uchar *y_img, uchar *cb_img, uchar *cr
         return;
     }
 
-    float r = rgb[i].x;
-    float g = rgb[i].y;
-    float b = rgb[i].z;
+    int r = rgb[i].x;
+    int g = rgb[i].y;
+    int b = rgb[i].z;
 
-    y_img[i] = 0.257 * r + 0.504 * g + 0.098 * b + 16.0;
-    cb_img[i] = -0.148 * r - 0.291 * g + 0.439 * b + 128.0;
-    cr_img[i] = 0.439 * r - 0.368 * g - 0.071 * b + 128.0;
+    y_img[i] = (257 * r + 504 * g + 98 * b) / 1000 + 16;
+    cb_img[i] = (-148 * r - 291 * g + 439 * b) / 1000 + 128;
+    cr_img[i] = (439 * r - 368 * g - 71 * b) / 1000 + 128;
 }
 
 
@@ -33,13 +33,13 @@ __global__ void ycbcr_to_rgb(uchar *y_img, uchar *cb_img, uchar *cr_img, uchar3 
         return;
     }
 
-    float y = (float)y_img[i] - 16.;
-    float cb = (float)cb_img[i] - 128.;
-    float cr = (float)cr_img[i] - 128.;
+    int y = (int)y_img[i] - 16;
+    int cb = (int)cb_img[i] - 128;
+    int cr = (int)cr_img[i] - 128;
 
-    rgb[i].x = clamp(1.164 * y + 1.596 * cr, 0., 255.);
-    rgb[i].y = clamp(1.164 * y - 0.392 * cb - 0.813 * cr, 0., 255.);
-    rgb[i].z = clamp(1.164 * y + 2.017 * cb, 0., 255.);
+    rgb[i].x = clamp((1164 * y + 1596 * cr) / 1000, 0, 255);
+    rgb[i].y = clamp((1164 * y - 392 * cb - 813 * cr) / 1000, 0, 255);
+    rgb[i].z = clamp((1164 * y + 2017 * cb) / 1000, 0, 255);
 }
 
 
