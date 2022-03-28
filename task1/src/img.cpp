@@ -31,7 +31,7 @@ void Img::load(const std::string& path, int force_channels)
     }
 }
 
-Img::Img(const Img& img)
+void Img::from(const Img& img)
 {
     _width = img.get_width();
     _height = img.get_height();
@@ -41,6 +41,18 @@ Img::Img(const Img& img)
         (uchar*)malloc(size),
         stbi_image_free);
     memcpy(_data.get(), img.get_data(), size);
+}
+
+Img::Img(const Img& img)
+{
+    from(img);
+}
+
+
+Img& Img::operator=(const Img& img)
+{
+    from(img);
+    return *this;
 }
 
 void Img::save(const std::string& path)

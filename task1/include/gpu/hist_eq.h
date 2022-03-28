@@ -39,12 +39,23 @@ public:
     ~HistData();
 };
 
+enum HistComputationMode {
+    DEFAULT,
+    SEPARATE_THREAD_HIST,
+};
+
 class EqualizeHistogramGPU {
 private:
     float _time_w_copy;
     float _time_wo_copy;
+    HistComputationMode _mode;
 
 public:
+    EqualizeHistogramGPU(HistComputationMode hist_mode)
+    {
+        _mode = hist_mode;
+    }
+
     void process(Img& rgb_img);
 
     float get_time_w_copy() const

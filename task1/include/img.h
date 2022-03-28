@@ -25,6 +25,10 @@ public:
 
     Img(const Img& img);
 
+    void from(const Img& img);
+
+    Img& operator=(const Img& img);
+
     void load(const std::string& path, int force_channels = 0);
 
     void save(const std::string& path);

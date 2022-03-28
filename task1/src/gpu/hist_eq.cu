@@ -43,6 +43,16 @@ __global__ void ycbcr_to_rgb(uchar *y_img, uchar *cb_img, uchar *cr_img, uchar3 
 }
 
 
+__global__ void histogram(uchar *y_img, uint *hist, int size)
+{ 
+    uint i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= size) {
+        return;
+    }
+    atomicAdd(hist + y_img[i], 1);
+}
+
+
 __global__ void block_histograms(uchar *y_img, uint *hist, int size)
 {
     __shared__ uchar shared_hist[SHARED_S];
@@ -214,14 +224,24 @@ void EqualizeHistogramGPU::process(Img& rgb_img)
         hist_data.cb_gpu,
         hist_data.cr_gpu,
         width * height);
-    block_histograms<<<dimGridH, dimBlockH>>>(
-        hist_data.y_gpu,
-        hist_data.block_hist_gpu,
-        width * height);
-    merge_block_histograms<<<HIST_SIZE, MERGE_THREADBLOCK_SIZE>>>(
-        hist_data.hist_gpu,
-        hist_data.block_hist_gpu,
-        dimGridH.x);
+    switch (_mode) {
+    case HistComputationMode::DEFAULT:
+        histogram<<<dimGrid, dimBlock>>>(
+            hist_data.y_gpu,
+            hist_data.hist_gpu,
+            width * height);
+        break;
+    case HistComputationMode::SEPARATE_THREAD_HIST:
+        block_histograms<<<dimGridH, dimBlockH>>>(
+            hist_data.y_gpu,
+            hist_data.block_hist_gpu,
+            width * height);
+        merge_block_histograms<<<HIST_SIZE, MERGE_THREADBLOCK_SIZE>>>(
+            hist_data.hist_gpu,
+            hist_data.block_hist_gpu,
+            dimGridH.x);
+        break;
+    }
     calcCDF<<<dimGridHist, dimBlockHist>>>(
         hist_data.cdf_gpu,
         hist_data.hist_gpu,
