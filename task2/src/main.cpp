@@ -37,8 +37,8 @@ int main(int argc, char** argv)
         weights[idx++] = named_param.value.data_ptr<float>();
     }
 
-    const int W = 1024;
-    const int H = 1024;
+    const int W = 512;
+    const int H = 512;
 
     float* points;
     float* out;
@@ -60,7 +60,8 @@ int main(int argc, char** argv)
         out,
         weights,
         W,
-        H);
+        H,
+        1e-2);
 
     Img img(W, H, 3);
     int idx_out;

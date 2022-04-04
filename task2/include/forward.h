@@ -23,12 +23,5 @@ void forward(
     float* out,
     float** weights,
     int W,
-    int H);
-
-void sphere_tracing(
-    float* P,
-    float* D,
-    float eps,
-    float **weights,
-    int W,
-    int H);
+    int H,
+    float eps);
