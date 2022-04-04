@@ -1,4 +1,6 @@
 #include <cuda_runtime.h>
+#include <vector_types.h>
+#include <vector_functions.h>
 #include <algorithm>
 #include <iostream>
 #include "forward.h"
@@ -91,8 +93,60 @@ public:
     }
 };
 
+__device__ float3 operator+(const float3 &a, const float3 &b)
+{
+    return make_float3(a.x + b.x, a.y + b.y, a.z + b.z);
+}
 
-__device__ void linear_point(
+__device__ float3 operator-(const float3 &a, const float3 &b)
+{
+    return make_float3(a.x - b.x, a.y - b.y, a.z - b.z);
+}
+
+__device__ float3 operator/(const float3 &a, const float3 &b)
+{
+    return make_float3(a.x / b.x, a.y / b.y, a.z / b.z);
+}
+
+inline __device__ float3 minf3(float3 a, float3 b){ return make_float3(a.x < b.x ? a.x : b.x, a.y < b.y ? a.y : b.y, a.z < b.z ? a.z : b.z); }
+
+inline __device__ float3 maxf3(float3 a, float3 b){ return make_float3(a.x > b.x ? a.x : b.x, a.y > b.y ? a.y : b.y, a.z > b.z ? a.z : b.z); }
+
+inline __device__ float minf1(float a, float b){ return a < b ? a : b; }
+
+inline __device__ float maxf1(float a, float b){ return a > b ? a : b; }
+
+struct AABBOX {
+
+    float3 min;
+    float3 max;
+    float eps = 1e-4;
+
+    AABBOX(float3 _min, float3 _max)
+    {
+        min = _min;
+        max = _max;
+    }
+
+    __device__ float intersect(float3 orig, float3 dir)
+    {
+        float3 tmin = (min - orig) / dir;
+        float3 tmax = (max - orig) / dir;
+
+		float3 real_min = minf3(tmin, tmax);
+		float3 real_max = maxf3(tmin, tmax);
+
+		float minmax = minf1(minf1(real_max.x, real_max.y), real_max.z);
+		float maxmin = maxf1(maxf1(real_min.x, real_min.y), real_min.z);
+
+        if (minmax >= maxmin) {
+            return maxmin > eps ? maxmin : 0;
+        }
+        return 0;
+    }
+};
+
+__device__ void linear(
     float *x_in,
     float *x_out,
     int d_in,
@@ -125,18 +179,75 @@ __device__ void linear_point(
     }
 }
 
-
-__device__ void forward_point(
+__device__ float linear_out1(
     float *x_in,
+    int d_in,
+    float *weights,
+    float *bias,
+    Activation activation,
+    float alpha)
+{
+    float out = 0.;
+
+    for (int j = 0; j < d_in; ++j) {
+        out += x_in[j] * weights[j];
+    }
+    out += bias[0];
+
+    switch (activation) {
+    case Activation::LeakyReLU:
+        if (out < 0) {
+            out = alpha * out;
+        }
+        break;
+    case Activation::Tanh:
+        out = tanh(out);
+    }
+
+    return out;
+}
+
+__device__ void linear_in3(
+    float3 point,
+    float *x_out,
+    int d_out,
+    float *weights,
+    float *bias,
+    Activation activation,
+    float alpha)
+{
+    for (int i = 0; i < d_out; ++i) {
+        float out;
+        int row = 3 * i;
+
+        out = point.x * weights[row];
+        out += point.y * weights[row + 1];
+        out += point.z * weights[row + 2];
+        out += bias[i];
+
+        switch (activation) {
+        case Activation::LeakyReLU:
+            if (out < 0) {
+                out = alpha * out;
+            }
+            break;
+        case Activation::Tanh:
+            out = tanh(out);
+        }
+
+        x_out[i] = out;
+    }
+}
+
+__device__ float forward_point(
+    float3 point,
     float *x_inner_1,
     float *x_inner_2,
-    float *x_out,
     float **weights)
 {
-    linear_point(
-        x_in,
+    linear_in3(
+        point,
         x_inner_1,
-        3,
         32,
         weights[0],
         weights[1],
@@ -146,7 +257,7 @@ __device__ void forward_point(
 
     float *tmp;
     for (int i = 0; i < 3; ++i) {
-        linear_point(
+        linear(
             x_inner_1,
             x_inner_2,
             32,
@@ -161,11 +272,9 @@ __device__ void forward_point(
         x_inner_2 = tmp;
     }
 
-    linear_point(
+    return linear_out1(
         x_inner_1,
-        x_out,
         32,
-        1,
         weights[8],
         weights[9],
         Activation::Tanh,
@@ -180,6 +289,7 @@ __global__ void sphere_tracing(
     float *X_inner_1,
     float *X_inner_2,
     float **weights,
+    AABBOX bbox,
     int W,
     int H)
 {
@@ -192,32 +302,60 @@ __global__ void sphere_tracing(
     int idx = i * W + j;
     int p_idx = idx * 3;
     int i_idx = idx * 32;
+    float d, d_bbox;
 
-    forward_point(
-        P + p_idx,
+    float3 dir = make_float3(
+        D[p_idx],
+        D[p_idx + 1],
+        D[p_idx + 2]);
+    float3 point = make_float3(
+        P[p_idx],
+        P[p_idx + 1],
+        P[p_idx + 2]);
+
+    d_bbox = bbox.intersect(point, dir);
+    if (d_bbox == 0.0) {
+        dist[idx] = 1.0;
+        return;
+    }
+
+    d = forward_point(
+        point,
         X_inner_1 + i_idx,
         X_inner_2 + i_idx,
-        dist + idx,
         weights
     );
 
-    float d = dist[idx];
-    while (abs(d) > 1e-2 && d < 1) {
-        P[p_idx] += D[p_idx] * d;
-        P[p_idx + 1] += D[p_idx + 1] * d;
-        P[p_idx + 2] += D[p_idx + 2] * d;
+    float total_dist = d;
+    bool is_in_bbox = false;
+    float3 dir_bbox = dir;
+    while (abs(d) > 1e-2) {
+        point.x += dir.x * d;
+        point.y += dir.y * d;
+        point.z += dir.z * d;
 
-        forward_point(
-            P + p_idx,
+        d_bbox = bbox.intersect(point, dir_bbox);
+        if (d_bbox == 0.0) {
+            is_in_bbox = true;
+            dir_bbox.x = -dir_bbox.x;
+            dir_bbox.y = -dir_bbox.y;
+            dir_bbox.z = -dir_bbox.z;
+        } else if (is_in_bbox) {
+            /* out of bbox */
+            dist[idx] = 1.0;
+            return;
+        }
+
+        d = forward_point(
+            point,
             X_inner_1 + i_idx,
             X_inner_2 + i_idx,
-            dist + idx,
             weights
         );
-        d = dist[idx];
+        total_dist += d;
     }
+    dist[idx] = total_dist;
 }
-
 
 void forward(
     float *in,
@@ -244,7 +382,7 @@ void forward(
     sizes[8] = 32;
     sizes[9] = 1;
 
-    Weights weights_gpu_o(weights, sizes, 10);
+    Weights weights_gpu(weights, sizes, 10);
 
     // for (int i = 0; i < 10; ++i) {
     //     checkCudaErrors(cudaMalloc((void**)&weights_gpu[i], sizes[i] * sizeof(float)));
@@ -284,13 +422,19 @@ void forward(
         W * H * 3 * sizeof(float),
         cudaMemcpyHostToDevice));
 
+    AABBOX bbox(
+        make_float3(-0.76, -0.76, -0.56),
+        make_float3(0.76,  0.76,  0.56)
+    );
+
     sphere_tracing<<<dimGrid2, dimBlock2>>>(
         in_gpu,
         D_gpu,
         out_gpu,
         inner1,
         inner2,
-        weights_gpu_o.weights_gpu,
+        weights_gpu.weights_gpu,
+        bbox,
         W,
         H
     );
@@ -346,8 +490,6 @@ void forward(
         W * H * sizeof(float),
         cudaMemcpyDeviceToHost));
     checkCudaErrors(cudaDeviceSynchronize());
-
-    std::cout << 4 << std::endl;
 }
 
 void sphere_tracing(

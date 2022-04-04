@@ -42,4 +42,4 @@ target_include_directories(main
 
 target_link_libraries(main "${TORCH_LIBRARIES}")
 
-target_compile_options(main PRIVATE -Werror -Wall -Wextra)
+target_compile_options(main PRIVATE -Werror -Wall -Wextra -O3)

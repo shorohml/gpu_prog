@@ -4,6 +4,16 @@
 #include <memory>
 #include <torch/script.h>
 
+template<typename T>
+T clamp(T val, T min_v, T max_v) {
+    if (val < min_v) {
+        return min_v;
+    } else if (val > max_v) {
+        return max_v;
+    }
+    return val;
+}
+
 int main(int argc, char** argv)
 {
     if (argc != 2) {
@@ -39,9 +49,9 @@ int main(int argc, char** argv)
     for (int i = 0; i < H; ++i) {
         for (int j = 0; j < W; ++j) {
             idx = (i * W + j) * 3;
-            points[idx + 2] = 1.0;
-            points[idx + 1] = -(static_cast<float>(i) / H - 0.5) * 2;
             points[idx] = (static_cast<float>(j) / W - 0.5) * 2;
+            points[idx + 1] = -(static_cast<float>(i) / H - 0.5) * 2;
+            points[idx + 2] = 1.0;
         }
     }
 
@@ -58,15 +68,9 @@ int main(int argc, char** argv)
         for (int j = 0; j < W; ++j) {
             idx = (i * W + j) * 3;
             idx_out = (i * W + j);
-            if (out[idx_out] > 0.5) {
-                img.get_data()[idx] = 255;
-                img.get_data()[idx + 1] = 255;
-                img.get_data()[idx + 2] = 255;
-            } else {
-                img.get_data()[idx] = 255;
-                img.get_data()[idx + 1] = 0;
-                img.get_data()[idx + 2] = 0;            
-            }
+            img.get_data()[idx] = 255 * clamp(out[idx_out], 0.0f, 1.0f);
+            img.get_data()[idx + 1] = 255 * clamp(out[idx_out], 0.0f, 1.0f);
+            img.get_data()[idx + 2] = 255 * clamp(out[idx_out], 0.0f, 1.0f);
         }
     }
 
