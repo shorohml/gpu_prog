@@ -1,0 +1,8 @@
+{
+    "width": 256,
+    "height": 256,
+    "name": "task2",
+    "dataPath": "../data",
+    "shadersPath": "../shaders",
+    "MouseSensitivity": 0.03
+}

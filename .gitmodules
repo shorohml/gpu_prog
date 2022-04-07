@@ -4,3 +4,9 @@
 [submodule "task2/external/stb"]
 	path = task2/external/stb
 	url = https://github.com/nothings/stb.git
+[submodule "task2/external/glfw"]
+	path = task2/external/glfw
+	url = https://github.com/glfw/glfw.git
+[submodule "task2/external/glm"]
+	path = task2/external/glm
+	url = https://github.com/g-truc/glm.git

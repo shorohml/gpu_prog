@@ -2,104 +2,85 @@
 #include <vector_types.h>
 #include <vector_functions.h>
 #include <algorithm>
+#include <vector>
 #include <iostream>
+#include <cmath>
+#include <glad/glad.h>
+#include <GLFW/glfw3.h>
+#include <cuda_gl_interop.h>
 #include "forward.h"
+#include "Camera.h"
+
+// ----------------------------------------------------------------------------------------------------
+// ----------------------------------------------------------------------------------------------------
+// Math operators for float3
+// ----------------------------------------------------------------------------------------------------
+// ----------------------------------------------------------------------------------------------------
+
+
+__host__ __device__ float3 operator+(const float3 &a, const float3 &b)
+{
+    return make_float3(a.x + b.x, a.y + b.y, a.z + b.z);
+}
+
+__host__ __device__ float3 operator-(const float3 &a, const float3 &b)
+{
+    return make_float3(a.x - b.x, a.y - b.y, a.z - b.z);
+}
+
+__host__ __device__ float3 operator-(const float3 &a)
+{
+    return make_float3(-a.x, -a.y, -a.z);
+}
+
+__host__ __device__ float3 operator/(const float3 &a, const float3 &b)
+{
+    return make_float3(a.x / b.x, a.y / b.y, a.z / b.z);
+}
+
+__host__ __device__ float3 operator*(const float3 &a, const float &b)
+{
+    return make_float3(a.x * b, a.y * b, a.z * b);
+}
+
+__host__ __device__ float3 minf3(float3 a, float3 b)
+{
+    return make_float3(a.x < b.x ? a.x : b.x, a.y < b.y ? a.y : b.y, a.z < b.z ? a.z : b.z);
+}
+
+__host__ __device__ float3 maxf3(float3 a, float3 b)
+{
+    return make_float3(a.x > b.x ? a.x : b.x, a.y > b.y ? a.y : b.y, a.z > b.z ? a.z : b.z);
+}
+
+__host__ __device__ float minf1(float a, float b)
+{
+    return a < b ? a : b;
+}
+
+__host__ __device__ float maxf1(float a, float b)
+{
+    return a > b ? a : b;
+}
+
+__host__ __device__ float dot(float3 a, float3 b)
+{
+	return a.x * b.x + a.y * b.y + a.z * b.z;
+}
+
+__host__ __device__ float3 normalize(float3 v)
+{
+	float invLen = rsqrtf(dot(v, v));
+	return v * invLen;
+}
+
+// ----------------------------------------------------------------------------------------------------
+// ----------------------------------------------------------------------------------------------------
 
 enum Activation {
     LeakyReLU,
     Tanh,
 };
-
-struct Weights {
-public:
-    float **weights_host;
-    float **weights_gpu;
-    int n_layers;
-
-    Weights(float **_weights_cpu, int *_sizes, int _n_layers) {
-        n_layers = _n_layers;
-        weights_host = (float **)malloc(_n_layers * sizeof(float *));
-        for (int i = 0; i < 10; ++i) {
-            checkCudaErrors(cudaMalloc((void**)&weights_host[i], _sizes[i] * sizeof(float)));
-            checkCudaErrors(cudaMemcpy(
-                weights_host[i],
-                _weights_cpu[i],
-                _sizes[i] * sizeof(float),
-                cudaMemcpyHostToDevice));
-        }
-        checkCudaErrors(cudaMalloc((void**)&weights_gpu, 10 * sizeof(float *)));
-        checkCudaErrors(cudaMemcpy(
-            weights_gpu,
-            weights_host,
-            _n_layers * sizeof(float *),
-            cudaMemcpyHostToDevice));
-    }
-
-    ~Weights() {
-        for (int i = 0; i < n_layers; ++i) {
-            checkCudaErrors(cudaFree(weights_host[i]));
-        }
-        checkCudaErrors(cudaFree(weights_gpu));
-        free(weights_host);
-    }
-};
-
-// --------------------------------------------------------------------------------------
-// --------------------------------------------------------------------------------------
-// Math operators for float3
-// --------------------------------------------------------------------------------------
-// --------------------------------------------------------------------------------------
-
-
-__device__ float3 operator+(const float3 &a, const float3 &b)
-{
-    return make_float3(a.x + b.x, a.y + b.y, a.z + b.z);
-}
-
-__device__ float3 operator-(const float3 &a, const float3 &b)
-{
-    return make_float3(a.x - b.x, a.y - b.y, a.z - b.z);
-}
-
-__device__ float3 operator-(const float3 &a)
-{
-    return make_float3(-a.x, -a.y, -a.z);
-}
-
-__device__ float3 operator/(const float3 &a, const float3 &b)
-{
-    return make_float3(a.x / b.x, a.y / b.y, a.z / b.z);
-}
-
-__device__ float3 operator*(const float3 &a, const float &b)
-{
-    return make_float3(a.x * b, a.y * b, a.z * b);
-}
-
-inline __device__ float3 minf3(float3 a, float3 b)
-{
-    return make_float3(a.x < b.x ? a.x : b.x, a.y < b.y ? a.y : b.y, a.z < b.z ? a.z : b.z);
-}
-
-inline __device__ float3 maxf3(float3 a, float3 b)
-{
-    return make_float3(a.x > b.x ? a.x : b.x, a.y > b.y ? a.y : b.y, a.z > b.z ? a.z : b.z);
-}
-
-inline __device__ float minf1(float a, float b)
-{
-    return a < b ? a : b;
-}
-
-inline __device__ float maxf1(float a, float b)
-{
-    return a > b ? a : b;
-}
-
-// --------------------------------------------------------------------------------------
-// --------------------------------------------------------------------------------------
-// --------------------------------------------------------------------------------------
-// --------------------------------------------------------------------------------------
 
 struct AABBOX {
 
@@ -273,14 +254,13 @@ __device__ float forward_point(
 }
 
 __global__ void sphere_tracing(
-    float *P,
-    float *D,
-    float *dist,
     float *X_inner_1,
     float *X_inner_2,
     float **weights,
+    float *color,
     int *sizes,
     AABBOX bbox,
+    CameraCuda cam,
     int W,
     int H,
     float eps)
@@ -291,36 +271,38 @@ __global__ void sphere_tracing(
         return;
     }
 
-    extern __shared__ float weights_s[];
-
     int idx = i * W + j;
     int p_idx = idx * 3;
     int i_idx = idx * 32;
     float d, d_bbox;
 
+    float3 point = cam.pos;
+
+    float nx = ((float)j / W - 0.5) * 2.0;
+    float ny = -((float)i / H - 0.5) * 2.0;
+    float3 dir = cam.side * nx + cam.up * ny + cam.dir * cam.invhalffov;
+
+    extern __shared__ float weights_s[];
+
     int t_idx = threadIdx.x * blockDim.y + threadIdx.y;
 
     int w_idx = 0;
-    for (int i = 0; i < 10; ++i) {
-        if (t_idx < sizes[i]) {
-           weights_s[w_idx + t_idx] = weights[i][t_idx]; 
+    if (t_idx < 10) {
+        for (int i = 0; i < t_idx; ++i) {
+            w_idx += sizes[i];
         }
-        w_idx += sizes[i];
+        for (int i = 0; i < sizes[t_idx]; ++i) {
+           weights_s[w_idx + i] = weights[t_idx][i]; 
+        }
     }
-    __syncthreads();
 
-    float3 dir = make_float3(
-        D[p_idx],
-        D[p_idx + 1],
-        D[p_idx + 2]);
-    float3 point = make_float3(
-        P[p_idx],
-        P[p_idx + 1],
-        P[p_idx + 2]);
+    __syncthreads();
 
     d_bbox = bbox.intersect(point, dir);
     if (d_bbox == 0.0) {
-        dist[idx] = 1.0;
+        color[p_idx] = 1.0;
+        color[p_idx + 1] = 1.0;
+        color[p_idx + 2] = 1.0;
         return;
     }
 
@@ -335,7 +317,7 @@ __global__ void sphere_tracing(
     float total_dist = d;
     bool is_in_bbox = false;
     float3 dir_bbox = dir;
-    while (abs(d) > eps) {
+    while (d > eps) {
         point = point + dir * d;
 
         d_bbox = bbox.intersect(point, dir_bbox);
@@ -345,8 +327,8 @@ __global__ void sphere_tracing(
             dir_bbox = -dir_bbox;
         } else if (is_in_bbox) {
             /* out of bbox */
-            dist[idx] = 1.0;
-            return;
+            total_dist = -1.0;
+            break;
         }
 
         d = forward_point(
@@ -358,20 +340,308 @@ __global__ void sphere_tracing(
         );
         total_dist += d;
     }
-    dist[idx] = total_dist;
+
+    float x1 = forward_point(
+        make_float3(point.x + 1e-5, point.y, point.z),
+        X_inner_1 + i_idx,
+        X_inner_2 + i_idx,
+        weights_s,
+        sizes
+    );
+    float x2 = forward_point(
+        make_float3(point.x - 1e-5, point.y, point.z),
+        X_inner_1 + i_idx,
+        X_inner_2 + i_idx,
+        weights_s,
+        sizes
+    );
+    float y1 = forward_point(
+        make_float3(point.x, point.y + 1e-5, point.z),
+        X_inner_1 + i_idx,
+        X_inner_2 + i_idx,
+        weights_s,
+        sizes
+    );
+    float y2 = forward_point(
+        make_float3(point.x, point.y - 1e-5, point.z),
+        X_inner_1 + i_idx,
+        X_inner_2 + i_idx,
+        weights_s,
+        sizes
+    );
+    float z1 = forward_point(
+        make_float3(point.x, point.y, point.z + 1e-5),
+        X_inner_1 + i_idx,
+        X_inner_2 + i_idx,
+        weights_s,
+        sizes
+    );
+    float z2 = forward_point(
+        make_float3(point.x, point.y, point.z - 1e-5),
+        X_inner_1 + i_idx,
+        X_inner_2 + i_idx,
+        weights_s,
+        sizes
+    );
+    float3 normal = make_float3(
+        x1 - x2,
+        y1 - y2,
+        z1 - z2
+    );
+    normal = normalize(normal);
+
+    float3 light = normalize(make_float3(0.0, 0.0, 1.0));
+
+    if (dot(light, normal) < 0) {
+        normal = -normal;
+    }
+
+    d = dot(normal, light);
+    float3 color_vec = make_float3(0.1, 0.2, 0.5) * 2.0 * d;
+
+    if (total_dist != -1.0) {
+        color[p_idx] = color_vec.x;
+        color[p_idx + 1] = color_vec.y;
+        color[p_idx + 2] = color_vec.z;
+    } else {
+        color[p_idx] = 1.0;
+        color[p_idx + 1] = 1.0;
+        color[p_idx + 2] = 1.0;
+    }
+
+    // if (total_dist != -1.0) {
+    //     color[p_idx] = normal.x * 0.5 + 0.5;
+    //     color[p_idx + 1] = normal.y * 0.5 + 0.5;
+    //     color[p_idx + 2] = normal.z * 0.5 + 0.5;
+    // } else {
+    //     color[p_idx] = 1.0;
+    //     color[p_idx + 1] = 1.0;
+    //     color[p_idx + 2] = 1.0;
+    // }
 }
 
-void forward(
-    float *in,
-    float *out,
+
+__global__ void sphere_tracing_texture(
+    float *X_inner_1,
+    float *X_inner_2,
     float **weights,
+    cudaSurfaceObject_t surface,
+    int *sizes,
+    AABBOX bbox,
+    CameraCuda cam,
+    int W,
+    int H,
+    float eps)
+{
+    uint x = blockIdx.x * blockDim.x + threadIdx.x;
+    uint y = blockIdx.y * blockDim.y + threadIdx.y;
+    if (x >= H || y >= W) {
+        return;
+    }
+
+    int idx = x * W + y;
+    int p_idx = idx * 3;
+    int i_idx = idx * 32;
+    float d, d_bbox;
+
+    float3 point = cam.pos;
+
+    float nx = ((float)x / W - 0.5) * 2.0;
+    float ny = ((float)y / H - 0.5) * 2.0;
+    float3 dir = cam.side * nx + cam.up * ny + cam.dir * cam.invhalffov;
+
+    extern __shared__ float weights_s[];
+
+    int t_idx = threadIdx.x * blockDim.y + threadIdx.y;
+
+    int w_idx = 0;
+    if (t_idx < 10) {
+        for (int i = 0; i < t_idx; ++i) {
+            w_idx += sizes[i];
+        }
+        for (int i = 0; i < sizes[t_idx]; ++i) {
+           weights_s[w_idx + i] = weights[t_idx][i]; 
+        }
+    }
+
+    __syncthreads();
+
+    float3 color_vec;
+    float3 normal;
+    float total_dist = d;
+    bool is_in_bbox = false;
+    float3 dir_bbox = dir;
+
+    d_bbox = bbox.intersect(point, dir);
+    if (d_bbox == 0.0) {
+        total_dist = -1.0;
+        color_vec.x = 1.0;
+        color_vec.y = 1.0;
+        color_vec.z = 1.0;
+    } else {
+        d = forward_point(
+            point,
+            X_inner_1 + i_idx,
+            X_inner_2 + i_idx,
+            weights_s,
+            sizes
+        );
+
+        while (d > eps) {
+            point = point + dir * d;
+
+            d_bbox = bbox.intersect(point, dir_bbox);
+            if (d_bbox == 0.0) {
+                /* entered bbox */
+                is_in_bbox = true;
+                dir_bbox = -dir_bbox;
+            } else if (is_in_bbox) {
+                /* out of bbox */
+                total_dist = -1.0;
+                break;
+            }
+
+            d = forward_point(
+                point,
+                X_inner_1 + i_idx,
+                X_inner_2 + i_idx,
+                weights_s,
+                sizes
+            );
+            total_dist += d;
+        }
+
+        float x1 = forward_point(
+            make_float3(point.x + 1e-5, point.y, point.z),
+            X_inner_1 + i_idx,
+            X_inner_2 + i_idx,
+            weights_s,
+            sizes
+        );
+        float x2 = forward_point(
+            make_float3(point.x - 1e-5, point.y, point.z),
+            X_inner_1 + i_idx,
+            X_inner_2 + i_idx,
+            weights_s,
+            sizes
+        );
+        float y1 = forward_point(
+            make_float3(point.x, point.y + 1e-5, point.z),
+            X_inner_1 + i_idx,
+            X_inner_2 + i_idx,
+            weights_s,
+            sizes
+        );
+        float y2 = forward_point(
+            make_float3(point.x, point.y - 1e-5, point.z),
+            X_inner_1 + i_idx,
+            X_inner_2 + i_idx,
+            weights_s,
+            sizes
+        );
+        float z1 = forward_point(
+            make_float3(point.x, point.y, point.z + 1e-5),
+            X_inner_1 + i_idx,
+            X_inner_2 + i_idx,
+            weights_s,
+            sizes
+        );
+        float z2 = forward_point(
+            make_float3(point.x, point.y, point.z - 1e-5),
+            X_inner_1 + i_idx,
+            X_inner_2 + i_idx,
+            weights_s,
+            sizes
+        );
+        normal = make_float3(
+            x1 - x2,
+            y1 - y2,
+            z1 - z2
+        );
+        normal = normalize(normal);
+
+        float3 light = normalize(make_float3(0.0, 0.0, 1.0));
+
+        if (dot(dir, normal) > 0) {
+            normal = -normal;
+        }
+
+        d = dot(normal, light);
+        color_vec = make_float3(0.1, 0.2, 0.5) * 2.0 * d;
+
+        if (total_dist == -1.0) {
+            color_vec = make_float3(1.0f, 1.0f, 1.0f);
+        }
+    }
+
+    // uchar4 data;
+    // data.x = (unsigned char)(255 * color_vec.x);
+    // data.y = (unsigned char)(255 * color_vec.y);
+    // data.z = (unsigned char)(255 * color_vec.z);
+    // data.w = 255;
+
+    uchar4 data;
+
+    // if (total_dist != -1.0) {
+    //     data.x = (unsigned char)(255 * (normal.x * 0.5 + 0.5));
+    //     data.y = (unsigned char)(255 * (normal.y * 0.5 + 0.5));
+    //     data.z = (unsigned char)(255 * (normal.z * 0.5 + 0.5));
+    //     data.w = 255;
+    // } else {
+    //     data.x = 255;
+    //     data.y = 255;
+    //     data.z = 255;
+    //     data.w = 255;
+    // }
+
+    if (total_dist != -1.0) {
+        fprintf("%f\n", )
+
+        data.x = (unsigned char)(255 * total_dist);
+        data.y = (unsigned char)(255 * total_dist);
+        data.z = (unsigned char)(255 * total_dist);
+        data.w = 255;
+    } else {
+        data.x = 255;
+        data.y = 255;
+        data.z = 255;
+        data.w = 255;
+    }
+
+    surf2Dwrite(data, surface, x * sizeof(uchar4), y);
+
+    // if (total_dist != -1.0) {
+    //     color[p_idx] = normal.x * 0.5 + 0.5;
+    //     color[p_idx + 1] = normal.y * 0.5 + 0.5;
+    //     color[p_idx + 2] = normal.z * 0.5 + 0.5;
+    // } else {
+    //     color[p_idx] = 1.0;
+    //     color[p_idx + 1] = 1.0;
+    //     color[p_idx + 2] = 1.0;
+    // }
+}
+
+
+CameraCuda::CameraCuda(float3 _pos, float3 _dir, float3 _up, float3 _side, float _fov)
+{
+    pos = _pos;
+    dir = normalize(_dir);
+    up = normalize(_up);
+    side = normalize(_side);
+    fov = _fov * (float)M_PI / 180.f;
+    invhalffov = 1.0f / std::tan(fov / 2.0f);
+}
+
+
+void forward(
+    float *color,
+    std::vector<std::vector<float> > &weights,
     int W,
     int H,
     float eps)
 {
     cudaEvent_t start_cu_1, stop_cu_1;
-    float *in_gpu;
-    float *out_gpu;
+    float *color_gpu;
     float *inner1;
     float *inner2;
     int sizes[10];
@@ -388,19 +658,14 @@ void forward(
     sizes[8] = 32;
     sizes[9] = 1;
 
+	dim3 dimBlock(N_THREADS_X, N_THREADS_Y);
+	dim3 dimGrid((H - 1) / N_THREADS_X + 1, (W - 1) / N_THREADS_Y + 1);
+
     Weights weights_gpu(weights, sizes, 10);
 
-    checkCudaErrors(cudaMalloc((void**)&in_gpu, W * H * 3 * sizeof(float)));
-    checkCudaErrors(cudaMalloc((void**)&out_gpu, W * H * sizeof(float)));
-    checkCudaErrors(cudaMemcpy(
-        in_gpu,
-        in,
-        W * H * 3 * sizeof(float),
-        cudaMemcpyHostToDevice));
-
+    checkCudaErrors(cudaMalloc((void**)&color_gpu, W * H * 3 * sizeof(float)));
     checkCudaErrors(cudaMalloc((void**)&inner1, W * H * 32 * sizeof(float)));
     checkCudaErrors(cudaMalloc((void**)&inner2, W * H * 32 * sizeof(float)));
-
     checkCudaErrors(cudaMalloc((void**)&sizes_gpu, 10 * sizeof(int)));
     checkCudaErrors(cudaMemcpy(
         sizes_gpu,
@@ -408,22 +673,12 @@ void forward(
         10 * sizeof(int),
         cudaMemcpyHostToDevice));
 
-	dim3 dimBlock(32, 32);
-	dim3 dimGrid((H - 1) / 32 + 1, (W - 1) / 32 + 1);
-
-    float *D = (float *)malloc(W * H * 3 * sizeof(float));
-    for (int i = 0; i < W * H; ++i) {
-        D[3 * i] = 0.0;
-        D[3 * i + 1] = 0.;
-        D[3 * i + 2] = -1.0;
-    }
-    float *D_gpu;
-    checkCudaErrors(cudaMalloc((void**)&D_gpu, W * H * 3 * sizeof(float)));
-    checkCudaErrors(cudaMemcpy(
-        D_gpu,
-        D,
-        W * H * 3 * sizeof(float),
-        cudaMemcpyHostToDevice));
+    Camera cam(
+        glm::vec3(0.f, 0.0f, 1.2f),
+        glm::vec3(0.0f, 1.0f, 0.0f),
+        YAW,
+        PITCH
+    );
 
     AABBOX bbox(
         make_float3(-0.76, -0.76, -0.56),
@@ -440,14 +695,13 @@ void forward(
     cudaEventRecord(start_cu_1, 0);
 
     sphere_tracing<<<dimGrid, dimBlock, size * sizeof(float)>>>(
-        in_gpu,
-        D_gpu,
-        out_gpu,
         inner1,
         inner2,
         weights_gpu.weights_gpu,
+        color_gpu,
         sizes_gpu,
         bbox,
+        cam.getCudaCamera(),
         W,
         H,
         eps
@@ -463,9 +717,48 @@ void forward(
     std::cout << time / 1000 << std::endl;
 
     checkCudaErrors(cudaMemcpy(
-        out,
-        out_gpu,
-        W * H * sizeof(float),
+        color,
+        color_gpu,
+        W * H * 3 * sizeof(float),
         cudaMemcpyDeviceToHost));
+
+    checkCudaErrors(cudaDeviceSynchronize());
+}
+
+
+void forward_surface(
+    cudaSurfaceObject_t surface,
+    NetworkData &network_data,
+    Camera &cam,
+    int W,
+    int H,
+    float eps)
+{
+	dim3 dimBlock(N_THREADS_X, N_THREADS_Y);
+	dim3 dimGrid((H - 1) / N_THREADS_X + 1, (W - 1) / N_THREADS_Y + 1);
+
+    AABBOX bbox(
+        make_float3(-0.76, -0.76, -0.56),
+        make_float3(0.76,  0.76,  0.56)
+    );
+
+    int size = 0;
+    for (int i = 0; i < network_data.sizes_cpu.size(); ++i) {
+        size += network_data.sizes_cpu[i];
+    }
+
+    sphere_tracing_texture<<<dimGrid, dimBlock, size * sizeof(float)>>>(
+        network_data.inner1,
+        network_data.inner2,
+        network_data.weights.weights_gpu,
+        surface,
+        network_data.sizes,
+        bbox,
+        cam.getCudaCamera(),
+        W,
+        H,
+        eps
+    );
+
     checkCudaErrors(cudaDeviceSynchronize());
 }

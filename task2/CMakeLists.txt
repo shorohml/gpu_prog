@@ -12,6 +12,12 @@ set(CMAKE_BUILD_TYPE Release)
 #---------------------------------------------------------------------------------------
 #---------------------------------------------------------------------------------------
 
+find_package(OpenGL REQUIRED)
+
+find_package(GLEW REQUIRED)
+
+find_package(CUDA REQUIRED)
+
 add_subdirectory(external)
 
 #---------------------------------------------------------------------------------------
@@ -20,14 +26,17 @@ add_subdirectory(external)
 #--------------------------------------------------------------------------------------
 #---------------------------------------------------------------------------------------
 
-find_package(CUDA REQUIRED)
-
-find_package(Torch REQUIRED)
 set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${TORCH_CXX_FLAGS}")
 
 set(SOURCE_FILES_GPU
+    src/glad.c
     src/main.cpp
     src/img.cpp
+    src/Camera.cpp
+    src/ShaderProgram.cpp
+    src/GLError.cpp
+    src/Models/Mesh.cpp
+    src/App.cpp
     src/forward.cu)
 
 cuda_add_executable(main ${SOURCE_FILES_GPU})
@@ -37,9 +46,16 @@ include_directories(SYSTEM
 target_include_directories(main
     PRIVATE
     include
+    ${GLAD_INCLUDE_DIRS}
+    ${GLEW_INCLUDE_DIRS}
     ${CUDA_INCLUDE_DIRS}
-    ${TORCH_INCLUDE_DIRS})
+    ${OPENGL_INCLUDE_DIR}})
 
-target_link_libraries(main "${TORCH_LIBRARIES}")
+target_link_libraries(main
+    glfw
+    glm
+    ${GLEW_LIBRARIES}
+    ${OPENGL_gl_LIBRARY}
+    nlohmann_json)
 
-target_compile_options(main PRIVATE -Werror -Wall -Wextra -O3)
+target_compile_options(main PRIVATE -Wall -Wextra -O3)
