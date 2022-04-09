@@ -74,43 +74,45 @@ __host__ __device__ float3 normalize(float3 v)
 	return v * invLen;
 }
 
+
+__host__ __device__ float clamp(float v, float min_v, float max_v)
+{
+    return maxf1(minf1(v, max_v), min_v);
+}
+
 // ----------------------------------------------------------------------------------------------------
 // ----------------------------------------------------------------------------------------------------
 
-enum Activation {
-    LeakyReLU,
-    Tanh,
-};
+AABBOX::AABBOX(float3 _min, float3 _max)
+{
+    min = _min;
+    max = _max;
+}
 
-struct AABBOX {
+//see https://www.scratchapixel.com/lessons/3d-basic-rendering/minimal-ray-tracer-rendering-simple-shapes/ray-box-intersection
+__device__ float AABBOX::intersect(float3 &orig, float3 &dir)
+{
+    float3 tmin = (min - orig) / dir;
+    float3 tmax = (max - orig) / dir;
 
-    float3 min;
-    float3 max;
-    float eps = 1e-4;
+    float3 real_min = minf3(tmin, tmax);
+    float3 real_max = maxf3(tmin, tmax);
 
-    AABBOX(float3 _min, float3 _max)
-    {
-        min = _min;
-        max = _max;
+    float minmax = minf1(minf1(real_max.x, real_max.y), real_max.z);
+    float maxmin = maxf1(maxf1(real_min.x, real_min.y), real_min.z);
+
+    if (minmax >= maxmin) {
+        return maxmin > eps ? maxmin : 0;
     }
+    return 0;
+}
 
-    __device__ float intersect(float3 orig, float3 dir)
-    {
-        float3 tmin = (min - orig) / dir;
-        float3 tmax = (max - orig) / dir;
+__device__ bool AABBOX::is_in(float3 point) {
+    return (point.x >= min.x) && (point.x <= max.x) &&
+            (point.y >= min.y) && (point.y <= max.y) &&
+            (point.z >= min.z) && (point.z <= max.z);
+}
 
-		float3 real_min = minf3(tmin, tmax);
-		float3 real_max = maxf3(tmin, tmax);
-
-		float minmax = minf1(minf1(real_max.x, real_max.y), real_max.z);
-		float maxmin = maxf1(maxf1(real_min.x, real_min.y), real_min.z);
-
-        if (minmax >= maxmin) {
-            return maxmin > eps ? maxmin : 0;
-        }
-        return 0;
-    }
-};
 
 __device__ void linear(
     float *x_in,
@@ -134,11 +136,12 @@ __device__ void linear(
         switch (activation) {
         case Activation::LeakyReLU:
             if (out < 0) {
-                out = alpha * out;
+                out *= alpha;
             }
             break;
         case Activation::Tanh:
             out = tanh(out);
+            break;
         }
 
         x_out[i] = out;
@@ -163,11 +166,12 @@ __device__ float linear_out1(
     switch (activation) {
     case Activation::LeakyReLU:
         if (out < 0) {
-            out = alpha * out;
+            out *= alpha;
         }
         break;
     case Activation::Tanh:
         out = tanh(out);
+        break;
     }
 
     return out;
@@ -194,11 +198,12 @@ __device__ void linear_in3(
         switch (activation) {
         case Activation::LeakyReLU:
             if (out < 0) {
-                out = alpha * out;
+                out *= alpha;
             }
             break;
         case Activation::Tanh:
             out = tanh(out);
+            break;
         }
 
         x_out[i] = out;
@@ -253,182 +258,22 @@ __device__ float forward_point(
     );
 }
 
-__global__ void sphere_tracing(
-    float *X_inner_1,
-    float *X_inner_2,
-    float **weights,
-    float *color,
-    int *sizes,
-    AABBOX bbox,
-    CameraCuda cam,
-    int W,
-    int H,
-    float eps)
-{
-    uint i = blockIdx.x * blockDim.x + threadIdx.x;
-    uint j = blockIdx.y * blockDim.y + threadIdx.y;
-    if (i >= H || j >= W) {
-        return;
-    }
-
-    int idx = i * W + j;
-    int p_idx = idx * 3;
-    int i_idx = idx * 32;
-    float d, d_bbox;
-
-    float3 point = cam.pos;
-
-    float nx = ((float)j / W - 0.5) * 2.0;
-    float ny = -((float)i / H - 0.5) * 2.0;
-    float3 dir = cam.side * nx + cam.up * ny + cam.dir * cam.invhalffov;
-
-    extern __shared__ float weights_s[];
-
-    int t_idx = threadIdx.x * blockDim.y + threadIdx.y;
-
-    int w_idx = 0;
-    if (t_idx < 10) {
-        for (int i = 0; i < t_idx; ++i) {
-            w_idx += sizes[i];
-        }
-        for (int i = 0; i < sizes[t_idx]; ++i) {
-           weights_s[w_idx + i] = weights[t_idx][i]; 
-        }
-    }
-
-    __syncthreads();
-
-    d_bbox = bbox.intersect(point, dir);
-    if (d_bbox == 0.0) {
-        color[p_idx] = 1.0;
-        color[p_idx + 1] = 1.0;
-        color[p_idx + 2] = 1.0;
-        return;
-    }
-
-    d = forward_point(
-        point,
-        X_inner_1 + i_idx,
-        X_inner_2 + i_idx,
-        weights_s,
-        sizes
-    );
-
-    float total_dist = d;
-    bool is_in_bbox = false;
-    float3 dir_bbox = dir;
-    while (d > eps) {
-        point = point + dir * d;
-
-        d_bbox = bbox.intersect(point, dir_bbox);
-        if (d_bbox == 0.0) {
-            /* entered bbox */
-            is_in_bbox = true;
-            dir_bbox = -dir_bbox;
-        } else if (is_in_bbox) {
-            /* out of bbox */
-            total_dist = -1.0;
-            break;
-        }
-
-        d = forward_point(
-            point,
-            X_inner_1 + i_idx,
-            X_inner_2 + i_idx,
-            weights_s,
-            sizes
-        );
-        total_dist += d;
-    }
-
-    float x1 = forward_point(
-        make_float3(point.x + 1e-5, point.y, point.z),
-        X_inner_1 + i_idx,
-        X_inner_2 + i_idx,
-        weights_s,
-        sizes
-    );
-    float x2 = forward_point(
-        make_float3(point.x - 1e-5, point.y, point.z),
-        X_inner_1 + i_idx,
-        X_inner_2 + i_idx,
-        weights_s,
-        sizes
-    );
-    float y1 = forward_point(
-        make_float3(point.x, point.y + 1e-5, point.z),
-        X_inner_1 + i_idx,
-        X_inner_2 + i_idx,
-        weights_s,
-        sizes
-    );
-    float y2 = forward_point(
-        make_float3(point.x, point.y - 1e-5, point.z),
-        X_inner_1 + i_idx,
-        X_inner_2 + i_idx,
-        weights_s,
-        sizes
-    );
-    float z1 = forward_point(
-        make_float3(point.x, point.y, point.z + 1e-5),
-        X_inner_1 + i_idx,
-        X_inner_2 + i_idx,
-        weights_s,
-        sizes
-    );
-    float z2 = forward_point(
-        make_float3(point.x, point.y, point.z - 1e-5),
-        X_inner_1 + i_idx,
-        X_inner_2 + i_idx,
-        weights_s,
-        sizes
-    );
-    float3 normal = make_float3(
-        x1 - x2,
-        y1 - y2,
-        z1 - z2
-    );
-    normal = normalize(normal);
-
-    float3 light = normalize(make_float3(0.0, 0.0, 1.0));
-
-    if (dot(light, normal) < 0) {
-        normal = -normal;
-    }
-
-    d = dot(normal, light);
-    float3 color_vec = make_float3(0.1, 0.2, 0.5) * 2.0 * d;
-
-    if (total_dist != -1.0) {
-        color[p_idx] = color_vec.x;
-        color[p_idx + 1] = color_vec.y;
-        color[p_idx + 2] = color_vec.z;
-    } else {
-        color[p_idx] = 1.0;
-        color[p_idx + 1] = 1.0;
-        color[p_idx + 2] = 1.0;
-    }
-
-    // if (total_dist != -1.0) {
-    //     color[p_idx] = normal.x * 0.5 + 0.5;
-    //     color[p_idx + 1] = normal.y * 0.5 + 0.5;
-    //     color[p_idx + 2] = normal.z * 0.5 + 0.5;
-    // } else {
-    //     color[p_idx] = 1.0;
-    //     color[p_idx + 1] = 1.0;
-    //     color[p_idx + 2] = 1.0;
-    // }
-}
-
+__constant__ float tet_vertices[] = {  
+    1, -1, -1,
+    -1, -1,  1,
+    -1,  1, -1,
+    1,  1,  1,
+};
 
 __global__ void sphere_tracing_texture(
-    float *X_inner_1,
-    float *X_inner_2,
-    float **weights,
-    cudaSurfaceObject_t surface,
+    float *weights,
+    uint *d_out,
     int *sizes,
+    int size,
     AABBOX bbox,
     CameraCuda cam,
+    const RenderingMode mode,
+    float3 light,
     int W,
     int H,
     float eps)
@@ -439,11 +284,7 @@ __global__ void sphere_tracing_texture(
         return;
     }
 
-    int idx = x * W + y;
-    int p_idx = idx * 3;
-    int i_idx = idx * 32;
     float d, d_bbox;
-
     float3 point = cam.pos;
 
     float nx = ((float)x / W - 0.5) * 2.0;
@@ -451,43 +292,52 @@ __global__ void sphere_tracing_texture(
     float3 dir = cam.side * nx + cam.up * ny + cam.dir * cam.invhalffov;
 
     extern __shared__ float weights_s[];
+    __shared__ float X_inner_1_s[N_THREADS_X * N_THREADS_Y * 32];
+    __shared__ float X_inner_2_s[N_THREADS_X * N_THREADS_Y * 32];
 
     int t_idx = threadIdx.x * blockDim.y + threadIdx.y;
 
-    int w_idx = 0;
-    if (t_idx < 10) {
-        for (int i = 0; i < t_idx; ++i) {
-            w_idx += sizes[i];
-        }
-        for (int i = 0; i < sizes[t_idx]; ++i) {
-           weights_s[w_idx + i] = weights[t_idx][i]; 
-        }
+    for (int i = 0; i < size / (blockDim.x * blockDim.y - 1) + 1; ++i) {
+        weights_s[t_idx + i * blockDim.x * blockDim.y] = weights[t_idx + i * blockDim.x * blockDim.y];
     }
 
     __syncthreads();
 
     float3 color_vec;
     float3 normal;
-    float total_dist = d;
+    float total_dist = 0.0;
     bool is_in_bbox = false;
     float3 dir_bbox = dir;
+    bool is_in;
+
+    const int MAX_STEPS = 20;
 
     d_bbox = bbox.intersect(point, dir);
-    if (d_bbox == 0.0) {
+    is_in = bbox.is_in(point);
+    if (!is_in && d_bbox == 0.0) {
         total_dist = -1.0;
         color_vec.x = 1.0;
         color_vec.y = 1.0;
         color_vec.z = 1.0;
     } else {
+        point = point + dir * d_bbox;
+        total_dist += d_bbox;
+
         d = forward_point(
             point,
-            X_inner_1 + i_idx,
-            X_inner_2 + i_idx,
+            X_inner_1_s + t_idx * 32,
+            X_inner_2_s + t_idx * 32,
             weights_s,
             sizes
         );
 
-        while (d > eps) {
+        for (int i = 0; i < MAX_STEPS; ++i) {
+            total_dist += d;
+
+            if (abs(d) < eps) {
+                break;
+            }
+
             point = point + dir * d;
 
             d_bbox = bbox.intersect(point, dir_bbox);
@@ -503,122 +353,88 @@ __global__ void sphere_tracing_texture(
 
             d = forward_point(
                 point,
-                X_inner_1 + i_idx,
-                X_inner_2 + i_idx,
+                X_inner_1_s + t_idx * 32,
+                X_inner_2_s + t_idx * 32,
                 weights_s,
                 sizes
             );
-            total_dist += d;
         }
-
-        float x1 = forward_point(
-            make_float3(point.x + 1e-5, point.y, point.z),
-            X_inner_1 + i_idx,
-            X_inner_2 + i_idx,
-            weights_s,
-            sizes
-        );
-        float x2 = forward_point(
-            make_float3(point.x - 1e-5, point.y, point.z),
-            X_inner_1 + i_idx,
-            X_inner_2 + i_idx,
-            weights_s,
-            sizes
-        );
-        float y1 = forward_point(
-            make_float3(point.x, point.y + 1e-5, point.z),
-            X_inner_1 + i_idx,
-            X_inner_2 + i_idx,
-            weights_s,
-            sizes
-        );
-        float y2 = forward_point(
-            make_float3(point.x, point.y - 1e-5, point.z),
-            X_inner_1 + i_idx,
-            X_inner_2 + i_idx,
-            weights_s,
-            sizes
-        );
-        float z1 = forward_point(
-            make_float3(point.x, point.y, point.z + 1e-5),
-            X_inner_1 + i_idx,
-            X_inner_2 + i_idx,
-            weights_s,
-            sizes
-        );
-        float z2 = forward_point(
-            make_float3(point.x, point.y, point.z - 1e-5),
-            X_inner_1 + i_idx,
-            X_inner_2 + i_idx,
-            weights_s,
-            sizes
-        );
-        normal = make_float3(
-            x1 - x2,
-            y1 - y2,
-            z1 - z2
-        );
-        normal = normalize(normal);
-
-        float3 light = normalize(make_float3(0.0, 0.0, 1.0));
-
-        if (dot(dir, normal) > 0) {
-            normal = -normal;
-        }
-
-        d = dot(normal, light);
-        color_vec = make_float3(0.1, 0.2, 0.5) * 2.0 * d;
 
         if (total_dist == -1.0) {
             color_vec = make_float3(1.0f, 1.0f, 1.0f);
+        } else {
+            //see https://iquilezles.org/www/articles/normalsSDF/normalsSDF.htm
+            float3 tet_point = make_float3(tet_vertices[0], tet_vertices[1], tet_vertices[2]);
+            float3 p0 = tet_point * forward_point(
+                point + tet_point * 1e-5,
+                X_inner_1_s + t_idx * 32,
+                X_inner_2_s + t_idx * 32,
+                weights_s,
+                sizes
+            );
+
+            tet_point = make_float3(tet_vertices[3], tet_vertices[4], tet_vertices[5]);
+            float3 p1 = tet_point * forward_point(
+                point + tet_point * 1e-5,
+                X_inner_1_s + t_idx * 32,
+                X_inner_2_s + t_idx * 32,
+                weights_s,
+                sizes
+            );
+
+            tet_point = make_float3(tet_vertices[6], tet_vertices[7], tet_vertices[8]);
+            float3 p2 = tet_point * forward_point(
+                point + tet_point * 1e-5,
+                X_inner_1_s + t_idx * 32,
+                X_inner_2_s + t_idx * 32,
+                weights_s,
+                sizes
+            );
+
+            tet_point = make_float3(tet_vertices[9], tet_vertices[10], tet_vertices[11]);
+            float3 p3 = tet_point * forward_point(
+                point + tet_point * 1e-5,
+                X_inner_1_s + t_idx * 32,
+                X_inner_2_s + t_idx * 32,
+                weights_s,
+                sizes
+            );
+
+            normal = normalize(p0 + p1 + p2 + p3);
+            d = dot(normal, -light);
+            color_vec = make_float3(0.1, 0.2, 0.5) * 2.0 * d;
         }
     }
 
-    // uchar4 data;
-    // data.x = (unsigned char)(255 * color_vec.x);
-    // data.y = (unsigned char)(255 * color_vec.y);
-    // data.z = (unsigned char)(255 * color_vec.z);
-    // data.w = 255;
-
     uchar4 data;
-
-    // if (total_dist != -1.0) {
-    //     data.x = (unsigned char)(255 * (normal.x * 0.5 + 0.5));
-    //     data.y = (unsigned char)(255 * (normal.y * 0.5 + 0.5));
-    //     data.z = (unsigned char)(255 * (normal.z * 0.5 + 0.5));
-    //     data.w = 255;
-    // } else {
-    //     data.x = 255;
-    //     data.y = 255;
-    //     data.z = 255;
-    //     data.w = 255;
-    // }
-
-    if (total_dist != -1.0) {
-        fprintf("%f\n", )
-
-        data.x = (unsigned char)(255 * total_dist);
-        data.y = (unsigned char)(255 * total_dist);
-        data.z = (unsigned char)(255 * total_dist);
-        data.w = 255;
-    } else {
+    if (total_dist == -1.0) {
         data.x = 255;
         data.y = 255;
         data.z = 255;
         data.w = 255;
+    } else {
+        switch (mode) {
+        case RenderingMode::DEFAULT:
+            data.x = 255 * color_vec.x;
+            data.y = 255 * color_vec.y;
+            data.z = 255 * color_vec.z;
+            data.w = 255;
+            break;
+        case RenderingMode::SHADOW_MAP:
+            data.x = 255 * (normal.x * 0.5 + 0.5);
+            data.y = 255 * (normal.y * 0.5 + 0.5);
+            data.z = 255 * (normal.z * 0.5 + 0.5);
+            data.w = 255;
+            break;
+        case RenderingMode::NORMALS_COLOR:
+            total_dist = clamp(total_dist, 0.0f, 1.0f);
+            data.x = 255 * total_dist;
+            data.y = 255 * total_dist;
+            data.z = 255 * total_dist;
+            break;
+        }
     }
-
-    surf2Dwrite(data, surface, x * sizeof(uchar4), y);
-
-    // if (total_dist != -1.0) {
-    //     color[p_idx] = normal.x * 0.5 + 0.5;
-    //     color[p_idx + 1] = normal.y * 0.5 + 0.5;
-    //     color[p_idx + 2] = normal.z * 0.5 + 0.5;
-    // } else {
-    //     color[p_idx] = 1.0;
-    //     color[p_idx + 1] = 1.0;
-    //     color[p_idx + 2] = 1.0;
-    // }
+    d_out[y * W + x] = data.w << 24 | data.z << 16 | data.y << 8 | data.x;
 }
 
 
@@ -632,104 +448,54 @@ CameraCuda::CameraCuda(float3 _pos, float3 _dir, float3 _up, float3 _side, float
     invhalffov = 1.0f / std::tan(fov / 2.0f);
 }
 
-
-void forward(
-    float *color,
-    std::vector<std::vector<float> > &weights,
-    int W,
-    int H,
-    float eps)
+Weights::Weights(std::vector<std::vector<float>>& _weights_cpu)
 {
-    cudaEvent_t start_cu_1, stop_cu_1;
-    float *color_gpu;
-    float *inner1;
-    float *inner2;
-    int sizes[10];
-    int *sizes_gpu;
-
-    sizes[0] = 32 * 3;
-    sizes[1] = 32;
-    sizes[2] = 32 * 32;
-    sizes[3] = 32;
-    sizes[4] = 32 * 32;
-    sizes[5] = 32;
-    sizes[6] = 32 * 32;
-    sizes[7] = 32;
-    sizes[8] = 32;
-    sizes[9] = 1;
-
-	dim3 dimBlock(N_THREADS_X, N_THREADS_Y);
-	dim3 dimGrid((H - 1) / N_THREADS_X + 1, (W - 1) / N_THREADS_Y + 1);
-
-    Weights weights_gpu(weights, sizes, 10);
-
-    checkCudaErrors(cudaMalloc((void**)&color_gpu, W * H * 3 * sizeof(float)));
-    checkCudaErrors(cudaMalloc((void**)&inner1, W * H * 32 * sizeof(float)));
-    checkCudaErrors(cudaMalloc((void**)&inner2, W * H * 32 * sizeof(float)));
-    checkCudaErrors(cudaMalloc((void**)&sizes_gpu, 10 * sizeof(int)));
-    checkCudaErrors(cudaMemcpy(
-        sizes_gpu,
-        sizes,
-        10 * sizeof(int),
-        cudaMemcpyHostToDevice));
-
-    Camera cam(
-        glm::vec3(0.f, 0.0f, 1.2f),
-        glm::vec3(0.0f, 1.0f, 0.0f),
-        YAW,
-        PITCH
-    );
-
-    AABBOX bbox(
-        make_float3(-0.76, -0.76, -0.56),
-        make_float3(0.76,  0.76,  0.56)
-    );
-
-    int size = 0;
-    for (int i = 0; i < 10; ++i) {
-        size += sizes[i];
+    for (std::size_t i = 0; i < _weights_cpu.size(); ++i) {
+        for (std::size_t j = 0; j < _weights_cpu[i].size(); ++j) {
+            all_weights.push_back(_weights_cpu[i][j]);
+        }
     }
 
-    cudaEventCreate(&start_cu_1);
-    cudaEventCreate(&stop_cu_1);
-    cudaEventRecord(start_cu_1, 0);
-
-    sphere_tracing<<<dimGrid, dimBlock, size * sizeof(float)>>>(
-        inner1,
-        inner2,
-        weights_gpu.weights_gpu,
-        color_gpu,
-        sizes_gpu,
-        bbox,
-        cam.getCudaCamera(),
-        W,
-        H,
-        eps
-    );
-
-    checkCudaErrors(cudaDeviceSynchronize());
-
-    float time;
-    cudaEventRecord(stop_cu_1, 0);
-    cudaEventSynchronize(stop_cu_1);
-    cudaEventElapsedTime(&time, start_cu_1, stop_cu_1);
-
-    std::cout << time / 1000 << std::endl;
-
+    checkCudaErrors(cudaMalloc((void**)&all_weights_gpu, all_weights.size() * sizeof(float)));
     checkCudaErrors(cudaMemcpy(
-        color,
-        color_gpu,
-        W * H * 3 * sizeof(float),
-        cudaMemcpyDeviceToHost));
+        all_weights_gpu,
+        all_weights.data(),
+        all_weights.size() * sizeof(float),
+        cudaMemcpyHostToDevice));
 
-    checkCudaErrors(cudaDeviceSynchronize());
+    n_layers = _weights_cpu.size();
 }
 
+Weights::~Weights()
+{
+    cudaFree(all_weights_gpu);
+}
+
+NetworkData::NetworkData(std::vector<std::vector<float>>& _weights_cpu)
+    : weights(_weights_cpu)
+{
+    for (std::size_t i = 0; i < _weights_cpu.size(); ++i) {
+        sizes_cpu.push_back(_weights_cpu[i].size());
+    }
+    checkCudaErrors(cudaMalloc((void**)&sizes, sizes_cpu.size() * sizeof(int)));
+    checkCudaErrors(cudaMemcpy(
+        sizes,
+        sizes_cpu.data(),
+        sizes_cpu.size() * sizeof(int),
+        cudaMemcpyHostToDevice));
+}
+
+NetworkData::~NetworkData()
+{
+    cudaFree(sizes);
+}
 
 void forward_surface(
-    cudaSurfaceObject_t surface,
+    uint *d_out,
     NetworkData &network_data,
-    Camera &cam,
+    const CameraCuda &cam,
+    const RenderingMode mode,
+    float3 light_dir,
     int W,
     int H,
     float eps)
@@ -738,8 +504,8 @@ void forward_surface(
 	dim3 dimGrid((H - 1) / N_THREADS_X + 1, (W - 1) / N_THREADS_Y + 1);
 
     AABBOX bbox(
-        make_float3(-0.76, -0.76, -0.56),
-        make_float3(0.76,  0.76,  0.56)
+        make_float3(-0.76, -0.8, -0.56),
+        make_float3(0.76,  0.8,  0.56)
     );
 
     int size = 0;
@@ -748,17 +514,16 @@ void forward_surface(
     }
 
     sphere_tracing_texture<<<dimGrid, dimBlock, size * sizeof(float)>>>(
-        network_data.inner1,
-        network_data.inner2,
-        network_data.weights.weights_gpu,
-        surface,
+        network_data.weights.all_weights_gpu,
+        d_out,
         network_data.sizes,
+        size,
         bbox,
-        cam.getCudaCamera(),
+        cam,
+        mode,
+        light_dir,
         W,
         H,
         eps
     );
-
-    checkCudaErrors(cudaDeviceSynchronize());
 }

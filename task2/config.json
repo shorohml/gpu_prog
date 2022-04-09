@@ -1,6 +1,6 @@
 {
-    "width": 256,
-    "height": 256,
+    "width": 512,
+    "height": 512,
     "name": "task2",
     "dataPath": "../data",
     "shadersPath": "../shaders",

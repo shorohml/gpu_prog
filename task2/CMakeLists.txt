@@ -14,8 +14,6 @@ set(CMAKE_BUILD_TYPE Release)
 
 find_package(OpenGL REQUIRED)
 
-find_package(GLEW REQUIRED)
-
 find_package(CUDA REQUIRED)
 
 add_subdirectory(external)
@@ -33,9 +31,9 @@ set(SOURCE_FILES_GPU
     src/main.cpp
     src/img.cpp
     src/Camera.cpp
+    src/Light.cpp
     src/ShaderProgram.cpp
     src/GLError.cpp
-    src/Models/Mesh.cpp
     src/App.cpp
     src/forward.cu)
 
@@ -47,14 +45,12 @@ target_include_directories(main
     PRIVATE
     include
     ${GLAD_INCLUDE_DIRS}
-    ${GLEW_INCLUDE_DIRS}
     ${CUDA_INCLUDE_DIRS}
     ${OPENGL_INCLUDE_DIR}})
 
 target_link_libraries(main
     glfw
     glm
-    ${GLEW_LIBRARIES}
     ${OPENGL_gl_LIBRARY}
     nlohmann_json)
 

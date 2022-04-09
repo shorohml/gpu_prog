@@ -58,23 +58,9 @@ std::vector<float> read_weights(const std::string& path)
     return res;
 }
 
-int main(int argc, char** argv)
+int main()
 {
-    if (argc != 3) {
-        std::cerr << "usage: example-app <path-to-exported-script-module>\n";
-        return -1;
-    }
-
-    int size = std::atoi(argv[2]);
-
     std::vector<std::vector<float> > weights;
-
-    const int W = size;
-    const int H = size;
-
-    float* color;
-
-    color = (float*)malloc(W * H * 3 * sizeof(float));
 
     std::vector<std::string> paths;
     for (int i = 0; i < 5; ++i) {
@@ -88,43 +74,9 @@ int main(int argc, char** argv)
         );
     }
 
-    std::vector<int> sizes = {
-        32 * 3,
-        32,
-        32 * 32,
-        32,
-        32 * 32,
-        32,
-        32 * 32,
-        32,
-        32,
-        1
-    };
-
     std::string pathToConfig = std::string("../config.json");
-    App app(pathToConfig, weights, sizes);
+    App app(pathToConfig, weights);
     app.Run();
 
-    forward(
-        color,
-        weights,
-        W,
-        H,
-        1e-2);
-
-    int idx = 0;
-    Img img(W, H, 3);
-    for (int i = 0; i < H; ++i) {
-        for (int j = 0; j < W; ++j) {
-            idx = (i * W + j) * 3;
-            img.get_data()[idx] = 255 * clamp(color[idx], 0.0f, 1.0f);
-            img.get_data()[idx + 1] = 255 * clamp(color[idx + 1], 0.0f, 1.0f);
-            img.get_data()[idx + 2] = 255 * clamp(color[idx + 2], 0.0f, 1.0f);
-        }
-    }
-
-    img.save("test.png");
-
-    free(color);
     return 0;
 }

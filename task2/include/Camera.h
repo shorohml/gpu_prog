@@ -7,6 +7,7 @@
 #include <vector>
 #include <vector_functions.h>
 #include <vector_types.h>
+#include "forward.h"
 
 // Defines several possible options for camera movement. Used as abstraction to stay away from window-system specific input methods
 enum Camera_Movement {
@@ -19,21 +20,9 @@ enum Camera_Movement {
 // Default camera values
 const float YAW = -90.0f;
 const float PITCH = 0.0f;
-const float SPEED = 0.01f;
+const float SPEED = 0.5f;
 const float SENSITIVITY = 0.1f;
 const float ZOOM = 90.0f;
-
-struct CameraCuda {
-public:
-    float3 pos;
-    float3 dir;
-    float3 up;
-    float3 side;
-    float fov;
-    float invhalffov;
-
-    CameraCuda(float3 _pos, float3 _dir, float3 _up, float3 _side, float fov);
-};
 
 // An abstract camera class that processes input and calculates the corresponding Euler Angles, Vectors and Matrices for use in OpenGL
 class Camera {

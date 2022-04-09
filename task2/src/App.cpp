@@ -4,8 +4,8 @@
 #include <map>
 #include <sstream>
 
-App::App(const std::string& pathToConfig, std::vector<std::vector<float>>& _weights, std::vector<int>& _sizes) :
-    network_data(_weights, _sizes, 32, 256, 256)
+App::App(const std::string& pathToConfig, std::vector<std::vector<float>>& _weights) :
+    network_data(_weights)
 {
     std::ifstream input(pathToConfig);
     if (!input.good()) {
@@ -17,7 +17,6 @@ App::App(const std::string& pathToConfig, std::vector<std::vector<float>>& _weig
     state.lastX = static_cast<float>(config["width"]) / 2.0f;
     state.lastY = static_cast<float>(config["height"]) / 2.0f;
     state.camera.MouseSensitivity = config["MouseSensitivity"];
-    state.camera.MovementSpeed = 50.0f * 2.0f;
 
     //setup path to directory with shaders
     shadersPath = config["shadersPath"];
@@ -199,6 +198,22 @@ void App::doCameraMovement()
     }
 }
 
+void App::doLightMovement()
+{
+    if ((state.keys)[GLFW_KEY_UP]) {
+        state.light.ProcessKeyboard(FORWARD, state.deltaTime);
+    }
+    if ((state.keys)[GLFW_KEY_LEFT]) {
+        state.light.ProcessKeyboard(LEFT, state.deltaTime);
+    }
+    if ((state.keys)[GLFW_KEY_DOWN]) {
+        state.light.ProcessKeyboard(BACKWARD, state.deltaTime);
+    }
+    if ((state.keys)[GLFW_KEY_RIGHT]) {
+        state.light.ProcessKeyboard(RIGHT, state.deltaTime);
+    }
+}
+
 void App::setupQuad()
 {
     float quadData[16] = {
@@ -255,76 +270,103 @@ void App::deleteQuad()
 
 void App::setupColorBuffer()
 {
-    glGenTextures(1, &colorBufferTexture);
-    GL_CHECK_ERRORS;
-
-    glBindTexture(GL_TEXTURE_2D, colorBufferTexture);
-    GL_CHECK_ERRORS;
+    if (pbo)
     {
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-        GL_CHECK_ERRORS;
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-        GL_CHECK_ERRORS;
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 256, 256, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
-        GL_CHECK_ERRORS;
+        // unregister this buffer object from CUDA C
+        checkCudaErrors(cudaGraphicsUnregisterResource(cuda_pbo_resource));
+
+        // delete old buffer
+        glDeleteBuffers(1, &pbo);
+        glDeleteTextures(1, &tex);
     }
-    glBindTexture(GL_TEXTURE_2D, 0);
-    GL_CHECK_ERRORS;
 
-    cudaGraphicsGLRegisterImage(&colorCudaResource, colorBufferTexture, GL_TEXTURE_2D, cudaGraphicsRegisterFlagsWriteDiscard);
-    GL_CHECK_ERRORS;
+    int width = config["width"];
+    int height = config["height"];
 
+    // create pixel buffer object for display
+    glGenBuffers(1, &pbo);
+    glBindBuffer(GL_PIXEL_UNPACK_BUFFER, pbo);
+    glBufferData(GL_PIXEL_UNPACK_BUFFER, width * height * sizeof(GLubyte) * 4, 0, GL_STREAM_DRAW);
+    glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
+
+    // register this buffer object with CUDA
+    checkCudaErrors(cudaGraphicsGLRegisterBuffer(&cuda_pbo_resource, pbo, cudaGraphicsMapFlagsWriteDiscard));
+
+    // create texture for display
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     glBindTexture(GL_TEXTURE_2D, 0);
-    GL_CHECK_ERRORS;
 }
 
 void App::deleteColorBuffer()
 {
-    glDeleteTextures(1, &colorBufferTexture);
-    GL_CHECK_ERRORS;
+    glDeleteBuffers(1, &pbo);
+    glDeleteTextures(1, &tex);
 }
 
 void App::visualizeScene(ShaderProgram& quadColorProgram)
 {
-    cudaGraphicsMapResources(1, &colorCudaResource);
-    {
-        cudaArray_t colorCudaArray;
-        cudaGraphicsSubResourceGetMappedArray(&colorCudaArray, colorCudaResource, 0, 0);
-        cudaResourceDesc colorCudaArrayResourceDesc;
+    int width = config["width"];
+    int height = config["height"];
 
-        {
-            colorCudaArrayResourceDesc.resType = cudaResourceTypeArray;
-            colorCudaArrayResourceDesc.res.array.array = colorCudaArray;
-        }
-        cudaSurfaceObject_t colorCudaSurfaceObject;
+    // map PBO to get CUDA device pointer
+    uint *d_output;
+    // map PBO to get CUDA device pointer
+    checkCudaErrors(cudaGraphicsMapResources(1, &cuda_pbo_resource, 0));
+    size_t num_bytes;
+    checkCudaErrors(cudaGraphicsResourceGetMappedPointer((void **)&d_output, &num_bytes,
+                                                         cuda_pbo_resource));
 
-        cudaCreateSurfaceObject(&colorCudaSurfaceObject, &colorCudaArrayResourceDesc);
+    // clear image
+    checkCudaErrors(cudaMemset(d_output, 0, width*height*4));
 
-        forward_surface(
-            colorCudaSurfaceObject,
-            network_data,
-            state.camera,
-            256,
-            256,
-            1e-2);
+    forward_surface(
+        d_output,
+        network_data,
+        state.camera.getCudaCamera(),
+        state.renderingMode,
+        state.light.getDirection(),
+        config["width"],
+        config["height"],
+        1e-3);
 
-        cudaDestroySurfaceObject(colorCudaSurfaceObject);
-    }
-    cudaGraphicsUnmapResources(1, &colorCudaResource);
-    cudaStreamSynchronize(0);
+    checkCudaErrors(cudaGraphicsUnmapResources(1, &cuda_pbo_resource, 0));
 
+    // display results
+    glClear(GL_COLOR_BUFFER_BIT);
+
+    // draw image from PBO
     glDisable(GL_DEPTH_TEST);
+
+    glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+
+    // draw using texture
+    // copy from pbo to texture
+    glBindBuffer(GL_PIXEL_UNPACK_BUFFER, pbo);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, 0);
+    glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
+
+    glDisable(GL_CULL_FACE);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glEnable(GL_BLEND);
+    glDisable(GL_ALPHA_TEST);
 
     glUseProgram(quadColorProgram.ProgramObj); //StartUseShader
 
     glActiveTexture(GL_TEXTURE0);
-    glBindTexture(GL_TEXTURE_2D, colorBufferTexture);
+    glBindTexture(GL_TEXTURE_2D, tex);
     quadColorProgram.SetUniform("colorBuffer", 0);
 
     glBindVertexArray(quadVAO);
     glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_INT, nullptr);
+
     glBindVertexArray(0);
     glBindTexture(GL_TEXTURE_2D, 0);
+
     glUseProgram(0); //StopUseShader
 }
 
@@ -397,6 +439,7 @@ void App::mainLoop()
         //handle events
         glfwPollEvents();
         doCameraMovement();
+        doLightMovement();
 
         visualizeScene(quadColorProgram);
 
@@ -421,6 +464,5 @@ int App::Run()
         return result;
     }
     mainLoop();
-    release();
     return 0;
 }

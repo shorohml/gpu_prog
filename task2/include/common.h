@@ -13,3 +13,9 @@
 //пишет в консоль номер текущей строки и название исходного файла
 //а также тип ошибки
 #define GL_CHECK_ERRORS ThrowExceptionOnGLError(__LINE__, __FILE__);
+
+enum RenderingMode {
+    DEFAULT = 0,
+    SHADOW_MAP,
+    NORMALS_COLOR
+};

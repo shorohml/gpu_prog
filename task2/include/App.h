@@ -2,8 +2,9 @@
 #pragma once
 
 #include "Camera.h"
-#include "Models/Mesh.h"
+#include "ShaderProgram.h"
 #include "forward.h"
+#include "Light.h"
 
 #include <glad/glad.h>
 #include <GLFW/glfw3.h>
@@ -12,12 +13,6 @@
 #include <unordered_map>
 #include <vector>
 #include <cuda_gl_interop.h>
-
-enum RenderingMode {
-    DEFAULT = 0,
-    SHADOW_MAP,
-    NORMALS_COLOR
-};
 
 struct AppState {
 public:
@@ -30,21 +25,24 @@ public:
     bool g_captureMouse = true; //Мышка захвачена нашим приложением или нет?
     RenderingMode renderingMode = RenderingMode::DEFAULT;
     Camera camera; //camera
+    DirectionalLight light;
 
     AppState()
         : keys(1024, 0)
-        , camera(glm::vec3(0.f, 0.0f, 1.2f), glm::vec3(0.0f, 1.0f, 0.0f), YAW, PITCH)
+        , camera(glm::vec3(0.f, 0.0f, 1.7f), glm::vec3(0.0f, 1.0f, 0.0f), YAW, PITCH)
     {
     }
 };
 
 class App {
 public:
-    App(const std::string& pathToConfig, std::vector<std::vector<float> > &_weights, std::vector<int> &_sizes);
+    App(const std::string& pathToConfig, std::vector<std::vector<float> > &_weights);
 
     App(const App&) = delete;
 
     App& operator=(const App& other) = delete;
+
+    ~App() { release(); }
 
     int Run();
 
@@ -60,8 +58,10 @@ private:
     NetworkData network_data;
 
     //color buffer
-    GLuint colorBufferTexture;
-    cudaGraphicsResource_t colorCudaResource;
+    GLuint pbo = 0;     // OpenGL pixel buffer object
+    GLuint tex = 0;     // OpenGL texture object
+    struct cudaGraphicsResource *cuda_pbo_resource;
+
     void setupColorBuffer();
     void deleteColorBuffer();
 
@@ -83,6 +83,9 @@ private:
 
     //move camera
     void doCameraMovement();
+
+    //move light dir
+    void doLightMovement();
 
     //create GLFW window
     int createWindow();
