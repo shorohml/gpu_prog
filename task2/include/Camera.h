@@ -7,7 +7,7 @@
 #include <vector>
 #include <vector_functions.h>
 #include <vector_types.h>
-#include "forward.h"
+#include "ray_marching/ray_marching.h"
 
 // Defines several possible options for camera movement. Used as abstraction to stay away from window-system specific input methods
 enum Camera_Movement {

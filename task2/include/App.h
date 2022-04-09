@@ -3,7 +3,7 @@
 
 #include "Camera.h"
 #include "ShaderProgram.h"
-#include "forward.h"
+#include "ray_marching/ray_marching.h"
 #include "Light.h"
 
 #include <glad/glad.h>
@@ -18,11 +18,11 @@ struct AppState {
 public:
     float deltaTime = 0.0f; //Time between current frame and last frame
     float lastFrame = 0.0f; //Time of last frame
-    float lastX = 128, lastY = 128; //Last cursor position
+    float lastX, lastY; //Last cursor position
     bool firstMouse = true; //true if mouse didn't move
-    int filling = 1; //каркасный режим или нет
-    std::vector<bool> keys; //массив состояний кнопок - нажата/не нажата
-    bool g_captureMouse = true; //Мышка захвачена нашим приложением или нет?
+    int filling = 1; //wireframe mode or not
+    std::vector<bool> keys; //vector with buttons sate
+    bool g_captureMouse = true; //the mouse is captured by the application or not?
     RenderingMode renderingMode = RenderingMode::DEFAULT;
     Camera camera; //camera
     DirectionalLight light;
@@ -36,7 +36,7 @@ public:
 
 class App {
 public:
-    App(const std::string& pathToConfig, std::vector<std::vector<float> > &_weights);
+    App(nlohmann::json &_config, std::vector<std::vector<float> > &_weights);
 
     App(const App&) = delete;
 
@@ -57,9 +57,11 @@ private:
     //nn weigths
     NetworkData network_data;
 
+    AABBOX bbox;
+
     //color buffer
-    GLuint pbo = 0;     // OpenGL pixel buffer object
-    GLuint tex = 0;     // OpenGL texture object
+    GLuint pbo; // OpenGL pixel buffer object
+    GLuint tex; // OpenGL texture object
     struct cudaGraphicsResource *cuda_pbo_resource;
 
     void setupColorBuffer();
@@ -84,7 +86,7 @@ private:
     //move camera
     void doCameraMovement();
 
-    //move light dir
+    //change light dir
     void doLightMovement();
 
     //create GLFW window

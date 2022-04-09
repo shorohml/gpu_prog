@@ -3,20 +3,23 @@
 #include <vector_functions.h>
 #include <algorithm>
 #include <vector>
-#include <iostream>
 #include <cmath>
-#include <glad/glad.h>
-#include <GLFW/glfw3.h>
-#include <cuda_gl_interop.h>
-#include "forward.h"
+#include "ray_marching/nn_weights.h"
+#include "ray_marching/ray_marching.h"
 #include "Camera.h"
+
+__constant__ float tet_vertices[] = {  
+    1, -1, -1,
+    -1, -1,  1,
+    -1,  1, -1,
+    1,  1,  1,
+};
 
 // ----------------------------------------------------------------------------------------------------
 // ----------------------------------------------------------------------------------------------------
 // Math operators for float3
 // ----------------------------------------------------------------------------------------------------
 // ----------------------------------------------------------------------------------------------------
-
 
 __host__ __device__ float3 operator+(const float3 &a, const float3 &b)
 {
@@ -113,6 +116,15 @@ __device__ bool AABBOX::is_in(float3 point) {
             (point.z >= min.z) && (point.z <= max.z);
 }
 
+CameraCuda::CameraCuda(float3 _pos, float3 _dir, float3 _up, float3 _side, float _fov)
+{
+    pos = _pos;
+    dir = normalize(_dir);
+    up = normalize(_up);
+    side = normalize(_side);
+    fov = _fov * (float)M_PI / 180.f;
+    invhalffov = 1.0f / std::tan(fov / 2.0f);
+}
 
 __device__ void linear(
     float *x_in,
@@ -220,7 +232,7 @@ __device__ float forward_point(
     linear_in3(
         point,
         x_inner_1,
-        32,
+        HIDDEN_SIZE,
         weights,
         weights + sizes[0],
         Activation::LeakyReLU,
@@ -234,8 +246,8 @@ __device__ float forward_point(
         linear(
             x_inner_1,
             x_inner_2,
-            32,
-            32,
+            HIDDEN_SIZE,
+            HIDDEN_SIZE,
             weights + idx,
             weights + idx + sizes[2 + 2 * i],
             Activation::LeakyReLU,
@@ -250,20 +262,13 @@ __device__ float forward_point(
     idx += sizes[7];
     return linear_out1(
         x_inner_1,
-        32,
+        HIDDEN_SIZE,
         weights + idx,
         weights + idx + sizes[8],
         Activation::Tanh,
         0.1
     );
 }
-
-__constant__ float tet_vertices[] = {  
-    1, -1, -1,
-    -1, -1,  1,
-    -1,  1, -1,
-    1,  1,  1,
-};
 
 __global__ void sphere_tracing_texture(
     float *weights,
@@ -284,49 +289,50 @@ __global__ void sphere_tracing_texture(
         return;
     }
 
-    float d, d_bbox;
-    float3 point = cam.pos;
-
     float nx = ((float)x / W - 0.5) * 2.0;
     float ny = ((float)y / H - 0.5) * 2.0;
     float3 dir = cam.side * nx + cam.up * ny + cam.dir * cam.invhalffov;
 
+    float3 color_vec;
+    float3 normal;
+    bool is_in_bbox = false;
+    float3 dir_bbox = dir;
+    float total_dist = 0.0;
+    float d, d_bbox;
+    float3 point = cam.pos;
+
     extern __shared__ float weights_s[];
-    __shared__ float X_inner_1_s[N_THREADS_X * N_THREADS_Y * 32];
-    __shared__ float X_inner_2_s[N_THREADS_X * N_THREADS_Y * 32];
+    __shared__ float X_inner_1_s[N_THREADS_X * N_THREADS_Y * HIDDEN_SIZE];
+    __shared__ float X_inner_2_s[N_THREADS_X * N_THREADS_Y * HIDDEN_SIZE];
 
     int t_idx = threadIdx.x * blockDim.y + threadIdx.y;
 
-    for (int i = 0; i < size / (blockDim.x * blockDim.y - 1) + 1; ++i) {
-        weights_s[t_idx + i * blockDim.x * blockDim.y] = weights[t_idx + i * blockDim.x * blockDim.y];
+    const int block_size = N_THREADS_X * N_THREADS_Y;
+    const int n_steps = size / (block_size - 1) + 1;
+    int idx;
+    for (int i = 0; i < n_steps; ++i) {
+        idx = t_idx + i * block_size;
+        if (idx >= size) {
+            break;
+        }
+        weights_s[idx] = weights[idx];
     }
 
     __syncthreads();
 
-    float3 color_vec;
-    float3 normal;
-    float total_dist = 0.0;
-    bool is_in_bbox = false;
-    float3 dir_bbox = dir;
-    bool is_in;
-
-    const int MAX_STEPS = 20;
-
     d_bbox = bbox.intersect(point, dir);
-    is_in = bbox.is_in(point);
-    if (!is_in && d_bbox == 0.0) {
+    is_in_bbox = bbox.is_in(point);
+    int i_idx = t_idx * HIDDEN_SIZE;
+    if (!is_in_bbox && d_bbox == 0.0) {
         total_dist = -1.0;
-        color_vec.x = 1.0;
-        color_vec.y = 1.0;
-        color_vec.z = 1.0;
     } else {
         point = point + dir * d_bbox;
         total_dist += d_bbox;
 
         d = forward_point(
             point,
-            X_inner_1_s + t_idx * 32,
-            X_inner_2_s + t_idx * 32,
+            X_inner_1_s + i_idx,
+            X_inner_2_s + i_idx,
             weights_s,
             sizes
         );
@@ -353,8 +359,8 @@ __global__ void sphere_tracing_texture(
 
             d = forward_point(
                 point,
-                X_inner_1_s + t_idx * 32,
-                X_inner_2_s + t_idx * 32,
+                X_inner_1_s + i_idx,
+                X_inner_2_s + i_idx,
                 weights_s,
                 sizes
             );
@@ -367,8 +373,8 @@ __global__ void sphere_tracing_texture(
             float3 tet_point = make_float3(tet_vertices[0], tet_vertices[1], tet_vertices[2]);
             float3 p0 = tet_point * forward_point(
                 point + tet_point * 1e-5,
-                X_inner_1_s + t_idx * 32,
-                X_inner_2_s + t_idx * 32,
+                X_inner_1_s + i_idx,
+                X_inner_2_s + i_idx,
                 weights_s,
                 sizes
             );
@@ -376,8 +382,8 @@ __global__ void sphere_tracing_texture(
             tet_point = make_float3(tet_vertices[3], tet_vertices[4], tet_vertices[5]);
             float3 p1 = tet_point * forward_point(
                 point + tet_point * 1e-5,
-                X_inner_1_s + t_idx * 32,
-                X_inner_2_s + t_idx * 32,
+                X_inner_1_s + i_idx,
+                X_inner_2_s + i_idx,
                 weights_s,
                 sizes
             );
@@ -385,8 +391,8 @@ __global__ void sphere_tracing_texture(
             tet_point = make_float3(tet_vertices[6], tet_vertices[7], tet_vertices[8]);
             float3 p2 = tet_point * forward_point(
                 point + tet_point * 1e-5,
-                X_inner_1_s + t_idx * 32,
-                X_inner_2_s + t_idx * 32,
+                X_inner_1_s + i_idx,
+                X_inner_2_s + i_idx,
                 weights_s,
                 sizes
             );
@@ -394,12 +400,11 @@ __global__ void sphere_tracing_texture(
             tet_point = make_float3(tet_vertices[9], tet_vertices[10], tet_vertices[11]);
             float3 p3 = tet_point * forward_point(
                 point + tet_point * 1e-5,
-                X_inner_1_s + t_idx * 32,
-                X_inner_2_s + t_idx * 32,
+                X_inner_1_s + t_idx * HIDDEN_SIZE,
+                X_inner_2_s + t_idx * HIDDEN_SIZE,
                 weights_s,
                 sizes
             );
-
             normal = normalize(p0 + p1 + p2 + p3);
             d = dot(normal, -light);
             color_vec = make_float3(0.1, 0.2, 0.5) * 2.0 * d;
@@ -437,76 +442,19 @@ __global__ void sphere_tracing_texture(
     d_out[y * W + x] = data.w << 24 | data.z << 16 | data.y << 8 | data.x;
 }
 
-
-CameraCuda::CameraCuda(float3 _pos, float3 _dir, float3 _up, float3 _side, float _fov)
-{
-    pos = _pos;
-    dir = normalize(_dir);
-    up = normalize(_up);
-    side = normalize(_side);
-    fov = _fov * (float)M_PI / 180.f;
-    invhalffov = 1.0f / std::tan(fov / 2.0f);
-}
-
-Weights::Weights(std::vector<std::vector<float>>& _weights_cpu)
-{
-    for (std::size_t i = 0; i < _weights_cpu.size(); ++i) {
-        for (std::size_t j = 0; j < _weights_cpu[i].size(); ++j) {
-            all_weights.push_back(_weights_cpu[i][j]);
-        }
-    }
-
-    checkCudaErrors(cudaMalloc((void**)&all_weights_gpu, all_weights.size() * sizeof(float)));
-    checkCudaErrors(cudaMemcpy(
-        all_weights_gpu,
-        all_weights.data(),
-        all_weights.size() * sizeof(float),
-        cudaMemcpyHostToDevice));
-
-    n_layers = _weights_cpu.size();
-}
-
-Weights::~Weights()
-{
-    cudaFree(all_weights_gpu);
-}
-
-NetworkData::NetworkData(std::vector<std::vector<float>>& _weights_cpu)
-    : weights(_weights_cpu)
-{
-    for (std::size_t i = 0; i < _weights_cpu.size(); ++i) {
-        sizes_cpu.push_back(_weights_cpu[i].size());
-    }
-    checkCudaErrors(cudaMalloc((void**)&sizes, sizes_cpu.size() * sizeof(int)));
-    checkCudaErrors(cudaMemcpy(
-        sizes,
-        sizes_cpu.data(),
-        sizes_cpu.size() * sizeof(int),
-        cudaMemcpyHostToDevice));
-}
-
-NetworkData::~NetworkData()
-{
-    cudaFree(sizes);
-}
-
-void forward_surface(
-    uint *d_out,
-    NetworkData &network_data,
-    const CameraCuda &cam,
-    const RenderingMode mode,
-    float3 light_dir,
-    int W,
-    int H,
-    float eps)
+void render_w_ray_marhing(
+    uint* d_output,
+    NetworkData& network_data,
+    const AABBOX &bbox,
+    const CameraCuda& cam,
+    const RenderingMode& mode,
+    const float3& light_dir,
+    const int W,
+    const int H,
+    const float eps)
 {
 	dim3 dimBlock(N_THREADS_X, N_THREADS_Y);
 	dim3 dimGrid((H - 1) / N_THREADS_X + 1, (W - 1) / N_THREADS_Y + 1);
-
-    AABBOX bbox(
-        make_float3(-0.76, -0.8, -0.56),
-        make_float3(0.76,  0.8,  0.56)
-    );
 
     int size = 0;
     for (int i = 0; i < network_data.sizes_cpu.size(); ++i) {
@@ -515,7 +463,7 @@ void forward_surface(
 
     sphere_tracing_texture<<<dimGrid, dimBlock, size * sizeof(float)>>>(
         network_data.weights.all_weights_gpu,
-        d_out,
+        d_output,
         network_data.sizes,
         size,
         bbox,

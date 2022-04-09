@@ -1,18 +1,13 @@
 #include "App.h"
 #include "ShaderProgram.h"
-#include "forward.h"
+#include "ray_marching/ray_marching.h"
+#include "ray_marching/nn_weights.h"
 #include <map>
 #include <sstream>
 
-App::App(const std::string& pathToConfig, std::vector<std::vector<float>>& _weights) :
-    network_data(_weights)
+App::App(nlohmann::json &_config, std::vector<std::vector<float>>& _weights) :
+    config(_config), network_data(_weights)
 {
-    std::ifstream input(pathToConfig);
-    if (!input.good()) {
-        throw std::runtime_error("Failed to load config");
-    }
-    input >> config;
-
     //setup initial state
     state.lastX = static_cast<float>(config["width"]) / 2.0f;
     state.lastY = static_cast<float>(config["height"]) / 2.0f;
@@ -20,6 +15,11 @@ App::App(const std::string& pathToConfig, std::vector<std::vector<float>>& _weig
 
     //setup path to directory with shaders
     shadersPath = config["shadersPath"];
+
+    bbox = AABBOX(
+        make_float3(-0.76, -0.8, -0.56),
+        make_float3(0.76,  0.8,  0.56)
+    );
 }
 
 int App::initGL() const
@@ -29,12 +29,10 @@ int App::initGL() const
         std::cout << "Failed to initialize OpenGL context" << std::endl;
         return -1;
     }
-
     std::cout << "Vendor: " << glGetString(GL_VENDOR) << std::endl;
     std::cout << "Renderer: " << glGetString(GL_RENDERER) << std::endl;
     std::cout << "Version: " << glGetString(GL_VERSION) << std::endl;
     std::cout << "GLSL: " << glGetString(GL_SHADING_LANGUAGE_VERSION) << std::endl;
-
     return 0;
 }
 
@@ -266,33 +264,24 @@ void App::deleteQuad()
     glDeleteBuffers(1, &quadVAO);
     glDeleteBuffers(1, &quadVBO);
     glDeleteBuffers(1, &quadEBO);
+    GL_CHECK_ERRORS;
 }
 
 void App::setupColorBuffer()
 {
-    if (pbo)
-    {
-        // unregister this buffer object from CUDA C
-        checkCudaErrors(cudaGraphicsUnregisterResource(cuda_pbo_resource));
+    const int width = config["width"];
+    const int height = config["height"];
 
-        // delete old buffer
-        glDeleteBuffers(1, &pbo);
-        glDeleteTextures(1, &tex);
-    }
-
-    int width = config["width"];
-    int height = config["height"];
-
-    // create pixel buffer object for display
+    //create pixel buffer object for display
     glGenBuffers(1, &pbo);
     glBindBuffer(GL_PIXEL_UNPACK_BUFFER, pbo);
     glBufferData(GL_PIXEL_UNPACK_BUFFER, width * height * sizeof(GLubyte) * 4, 0, GL_STREAM_DRAW);
     glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
 
-    // register this buffer object with CUDA
+    //register this buffer object with CUDA
     checkCudaErrors(cudaGraphicsGLRegisterBuffer(&cuda_pbo_resource, pbo, cudaGraphicsMapFlagsWriteDiscard));
 
-    // create texture for display
+    //create texture for display
     glGenTextures(1, &tex);
     glBindTexture(GL_TEXTURE_2D, tex);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
@@ -303,57 +292,53 @@ void App::setupColorBuffer()
 
 void App::deleteColorBuffer()
 {
+    checkCudaErrors(cudaGraphicsUnregisterResource(cuda_pbo_resource));
     glDeleteBuffers(1, &pbo);
     glDeleteTextures(1, &tex);
 }
 
 void App::visualizeScene(ShaderProgram& quadColorProgram)
 {
-    int width = config["width"];
-    int height = config["height"];
+    const int width = config["width"];
+    const int height = config["height"];
 
-    // map PBO to get CUDA device pointer
+    GL_CHECK_ERRORS;
+
+    //map PBO to get CUDA device pointer
     uint *d_output;
-    // map PBO to get CUDA device pointer
-    checkCudaErrors(cudaGraphicsMapResources(1, &cuda_pbo_resource, 0));
     size_t num_bytes;
+    checkCudaErrors(cudaGraphicsMapResources(1, &cuda_pbo_resource, 0));
     checkCudaErrors(cudaGraphicsResourceGetMappedPointer((void **)&d_output, &num_bytes,
                                                          cuda_pbo_resource));
 
-    // clear image
-    checkCudaErrors(cudaMemset(d_output, 0, width*height*4));
-
-    forward_surface(
+    render_w_ray_marhing(
         d_output,
         network_data,
+        bbox,
         state.camera.getCudaCamera(),
         state.renderingMode,
         state.light.getDirection(),
         config["width"],
         config["height"],
-        1e-3);
+        config["ray_march_eps"]);
 
     checkCudaErrors(cudaGraphicsUnmapResources(1, &cuda_pbo_resource, 0));
 
-    // display results
+    //display results
     glClear(GL_COLOR_BUFFER_BIT);
 
-    // draw image from PBO
+    //draw image from PBO
     glDisable(GL_DEPTH_TEST);
-
     glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
 
-    // draw using texture
-    // copy from pbo to texture
+    //draw using texture
+    //copy from pbo to texture
     glBindBuffer(GL_PIXEL_UNPACK_BUFFER, pbo);
     glBindTexture(GL_TEXTURE_2D, tex);
     glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width, height, GL_RGBA, GL_UNSIGNED_BYTE, 0);
     glBindBuffer(GL_PIXEL_UNPACK_BUFFER, 0);
 
     glDisable(GL_CULL_FACE);
-    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-    glEnable(GL_BLEND);
-    glDisable(GL_ALPHA_TEST);
 
     glUseProgram(quadColorProgram.ProgramObj); //StartUseShader
 
@@ -435,7 +420,7 @@ void App::mainLoop()
             deltaSum = 0.0f;
             frameCount = 0;
         }
-
+        
         //handle events
         glfwPollEvents();
         doCameraMovement();
@@ -453,14 +438,14 @@ void App::mainLoop()
 
 void App::release()
 {
-    deleteQuad();
     deleteColorBuffer();
+    deleteQuad();
 }
 
 int App::Run()
 {
     int result = createWindow();
-    if (result != 0) {
+    if (result) {
         return result;
     }
     mainLoop();

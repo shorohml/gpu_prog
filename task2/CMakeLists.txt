@@ -35,7 +35,8 @@ set(SOURCE_FILES_GPU
     src/ShaderProgram.cpp
     src/GLError.cpp
     src/App.cpp
-    src/forward.cu)
+    src/ray_marching/ray_marching.cu
+    src/ray_marching/nn_weights.cpp)
 
 cuda_add_executable(main ${SOURCE_FILES_GPU})
 

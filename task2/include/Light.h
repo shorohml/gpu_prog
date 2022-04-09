@@ -7,10 +7,10 @@
 #include <vector>
 #include <vector_functions.h>
 #include <vector_types.h>
-#include "forward.h"
+#include "ray_marching/ray_marching.h"
 #include "Camera.h"
 
-const float LIGHT_SENSITIVITY = 18.0f;
+const float LIGHT_SOURCE_SENSITIVITY = 18.0f;
 
 // An abstract light class that processes input and calculates the corresponding Euler Angles, Vectors and Matrices for use in OpenGL
 class DirectionalLight {

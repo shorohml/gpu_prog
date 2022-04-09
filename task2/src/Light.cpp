@@ -2,7 +2,7 @@
 
 DirectionalLight::DirectionalLight(glm::vec3 up, float yaw, float pitch)
     : Front(glm::vec3(0.0f, 0.0f, -1.0f))
-    , MovementSpeed(LIGHT_SENSITIVITY)
+    , MovementSpeed(LIGHT_SOURCE_SENSITIVITY)
 {
     WorldUp = up;
     Yaw = yaw;
@@ -34,12 +34,11 @@ void DirectionalLight::ProcessKeyboard(Camera_Movement direction, float deltaTim
     Yaw += xoffset;
     Pitch += yoffset;
 
-    // make sure that when pitch is out of bounds, screen doesn't get flipped
     if (constrainPitch) {
-        if (Pitch > 89.0f)
-            Pitch = 89.0f;
-        if (Pitch < -89.0f)
-            Pitch = -89.0f;
+        if (Pitch > 359.0f)
+            Pitch = 359.0f;
+        if (Pitch < -359.0f)
+            Pitch = -359.0f;
     }
 
     // update Front, Right and Up Vectors using the updated Euler angles
