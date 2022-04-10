@@ -270,6 +270,68 @@ __device__ float forward_point(
     );
 }
 
+__device__ float ray_march(
+    AABBOX bbox,
+    float3 point,
+    float3 dir,
+    float *weights,
+    float *X_inner_1_s,
+    float *X_inner_2_s,
+    int *sizes,
+    int i_idx,
+    float eps)
+{
+
+    float d_bbox = bbox.intersect(point, dir);
+    bool is_in_bbox = bbox.is_in(point);
+    float3 dir_bbox = dir;
+
+    if (!is_in_bbox && d_bbox == 0.0) {
+        return -1.0;
+    }
+    point = point + dir * d_bbox;
+    float total_dist = d_bbox;
+
+    float d = forward_point(
+        point,
+        X_inner_1_s + i_idx,
+        X_inner_2_s + i_idx,
+        weights,
+        sizes
+    );
+
+    for (int i = 0; i < MAX_STEPS; ++i) {
+        total_dist += d;
+
+        if (abs(d) < eps) {
+            break;
+        }
+
+        point = point + dir * d;
+
+        d_bbox = bbox.intersect(point, dir_bbox);
+        if (d_bbox == 0.0) {
+            /* entered bbox */
+            is_in_bbox = true;
+            dir_bbox = -dir_bbox;
+        } else if (is_in_bbox) {
+            /* out of bbox */
+            total_dist = -1.0;
+            break;
+        }
+
+        d = forward_point(
+            point,
+            X_inner_1_s + i_idx,
+            X_inner_2_s + i_idx,
+            weights,
+            sizes
+        );
+    }
+    return total_dist;
+}
+
+
 __global__ void sphere_tracing_texture(
     float *weights,
     uint *d_out,
@@ -295,10 +357,8 @@ __global__ void sphere_tracing_texture(
 
     float3 color_vec;
     float3 normal;
-    bool is_in_bbox = false;
-    float3 dir_bbox = dir;
     float total_dist = 0.0;
-    float d, d_bbox;
+    float d;
     float3 point = cam.pos;
 
     extern __shared__ float weights_s[];
@@ -320,55 +380,43 @@ __global__ void sphere_tracing_texture(
 
     __syncthreads();
 
-    d_bbox = bbox.intersect(point, dir);
-    is_in_bbox = bbox.is_in(point);
-    int i_idx = t_idx * HIDDEN_SIZE;
-    if (!is_in_bbox && d_bbox == 0.0) {
-        total_dist = -1.0;
+    int i_idx = t_idx * HIDDEN_SIZE; 
+    total_dist = ray_march(
+        bbox,
+        point,
+        dir,
+        weights_s,
+        X_inner_1_s,
+        X_inner_2_s,
+        sizes,
+        i_idx,
+        eps
+    );
+
+    if (total_dist == -1.0) {
+        color_vec = make_float3(1.0f, 1.0f, 1.0f);
     } else {
-        point = point + dir * d_bbox;
-        total_dist += d_bbox;
+        point = point + dir * total_dist;
 
-        d = forward_point(
-            point,
-            X_inner_1_s + i_idx,
-            X_inner_2_s + i_idx,
-            weights_s,
-            sizes
-        );
-
-        for (int i = 0; i < MAX_STEPS; ++i) {
-            total_dist += d;
-
-            if (abs(d) < eps) {
-                break;
-            }
-
-            point = point + dir * d;
-
-            d_bbox = bbox.intersect(point, dir_bbox);
-            if (d_bbox == 0.0) {
-                /* entered bbox */
-                is_in_bbox = true;
-                dir_bbox = -dir_bbox;
-            } else if (is_in_bbox) {
-                /* out of bbox */
-                total_dist = -1.0;
-                break;
-            }
-
-            d = forward_point(
-                point,
-                X_inner_1_s + i_idx,
-                X_inner_2_s + i_idx,
+        bool compute_normals = true;
+        if (mode == RenderingMode::DEFAULT) {
+            //check if in shadow
+            const float dist_to_source = 1e3;
+            float3 light_point = point - light * dist_to_source;
+            float dist_from_source = ray_march(
+                bbox,
+                light_point,
+                light,
                 weights_s,
-                sizes
+                X_inner_1_s,
+                X_inner_2_s,
+                sizes,
+                i_idx,
+                eps
             );
+            compute_normals = dist_from_source >= dist_to_source - 1e-2;
         }
-
-        if (total_dist == -1.0) {
-            color_vec = make_float3(1.0f, 1.0f, 1.0f);
-        } else {
+        if (compute_normals) {
             //see https://iquilezles.org/www/articles/normalsSDF/normalsSDF.htm
             float3 tet_point = make_float3(tet_vertices[0], tet_vertices[1], tet_vertices[2]);
             float3 p0 = tet_point * forward_point(
@@ -378,7 +426,6 @@ __global__ void sphere_tracing_texture(
                 weights_s,
                 sizes
             );
-
             tet_point = make_float3(tet_vertices[3], tet_vertices[4], tet_vertices[5]);
             float3 p1 = tet_point * forward_point(
                 point + tet_point * 1e-5,
@@ -387,7 +434,6 @@ __global__ void sphere_tracing_texture(
                 weights_s,
                 sizes
             );
-
             tet_point = make_float3(tet_vertices[6], tet_vertices[7], tet_vertices[8]);
             float3 p2 = tet_point * forward_point(
                 point + tet_point * 1e-5,
@@ -396,7 +442,6 @@ __global__ void sphere_tracing_texture(
                 weights_s,
                 sizes
             );
-
             tet_point = make_float3(tet_vertices[9], tet_vertices[10], tet_vertices[11]);
             float3 p3 = tet_point * forward_point(
                 point + tet_point * 1e-5,
@@ -407,7 +452,9 @@ __global__ void sphere_tracing_texture(
             );
             normal = normalize(p0 + p1 + p2 + p3);
             d = dot(normal, -light);
-            color_vec = make_float3(0.1, 0.2, 0.5) * 2.0 * d;
+            color_vec = make_float3(0.2, 0.4, 1.0) * (0.1 + d);
+        } else {
+            color_vec = make_float3(0.2, 0.4, 1.0) * 0.1;
         }
     }
 
@@ -420,18 +467,18 @@ __global__ void sphere_tracing_texture(
     } else {
         switch (mode) {
         case RenderingMode::DEFAULT:
-            data.x = 255 * color_vec.x;
-            data.y = 255 * color_vec.y;
-            data.z = 255 * color_vec.z;
+            data.x = 255 * clamp(color_vec.x, 0.0f, 1.0f);
+            data.y = 255 * clamp(color_vec.y, 0.0f, 1.0f);
+            data.z = 255 * clamp(color_vec.z, 0.0f, 1.0f);
             data.w = 255;
             break;
-        case RenderingMode::SHADOW_MAP:
+        case RenderingMode::NORMALS_COLOR:
             data.x = 255 * (normal.x * 0.5 + 0.5);
             data.y = 255 * (normal.y * 0.5 + 0.5);
             data.z = 255 * (normal.z * 0.5 + 0.5);
             data.w = 255;
             break;
-        case RenderingMode::NORMALS_COLOR:
+        case RenderingMode::SHADOW_MAP:
             total_dist = clamp(total_dist, 0.0f, 1.0f);
             data.x = 255 * total_dist;
             data.y = 255 * total_dist;
