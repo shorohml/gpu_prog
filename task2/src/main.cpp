@@ -28,10 +28,11 @@ int main(int argc, char **argv)
     input >> config;
 
     std::vector<std::string> paths;
-    std::string data_path(config["dataPath"]); 
+    std::string data_path(config["dataPath"]);
+    data_path += std::string("/") + std::string(config["weightsPath"]);
     for (int i = 0; i < 5; ++i) {
-        paths.push_back(data_path + std::string("/NeuralNetworkWeights/weights") + std::to_string(i) + ".txt");
-        paths.push_back(data_path + std::string("/NeuralNetworkWeights/biases") + std::to_string(i) + ".txt");
+        paths.push_back(data_path + std::string("/weights") + std::to_string(i) + ".txt");
+        paths.push_back(data_path + std::string("/biases") + std::to_string(i) + ".txt");
     }
 
     for (const auto& path: paths) {

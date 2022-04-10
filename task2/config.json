@@ -4,6 +4,7 @@
     "name": "task2",
     "dataPath": "../data",
     "shadersPath": "../shaders",
+    "weightsPath": "NeuralNetworkWeightsCustom",
     "ray_march_eps": 1e-3,
     "MouseSensitivity": 0.03
 }
