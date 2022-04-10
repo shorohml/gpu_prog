@@ -3,7 +3,7 @@
 #include "App.h"
 #include <fstream>
 
-int main()
+int main(int argc, char **argv)
 {
     int device_count;
     cudaGetDeviceCount(&device_count);
@@ -15,9 +15,14 @@ int main()
     nlohmann::json config;
     std::vector<std::vector<float> > weights;
 
-    std::ifstream input("../config.json");
+    std::string config_path("../config.json");
+    if (2 == argc) {
+        config_path = std::string(argv[1]);
+    }
+
+    std::ifstream input(config_path);
     if (!input.good()) {
-        std::cerr << "Failed to load config";
+        std::cerr << "Failed to load config" << std::endl;
         return 1;
     }
     input >> config;
