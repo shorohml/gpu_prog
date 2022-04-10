@@ -1,6 +1,6 @@
 # Выбранный вариант - аппроксимация расстояния с помощью нейросетей
 
-[репозитторий](https://github.com/shorohml/gpu_prog/tree/master/task2)
+[репозиторий](https://github.com/shorohml/gpu_prog/tree/master/task2)
 
 ## 1 Обучение нейросети
 
