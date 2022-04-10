@@ -50,3 +50,17 @@ mkdir build && cd build && cmake .. && make
 ## 4. Выполненные пункты задания
 
 Все пункты
+
+## 5. Спецификация ПК
+
+Memory: 32 Gb
+
+Processor: Intel® Core™ i5-8400 CPU @ 2.80GHz × 6
+
+Graphics: NVIDIA Corporation TU106 [GeForce RTX 2070]
+
+## 6. Отчет о выполненных оптимизациях, полученном ускорении
+
+### 6.1 Кэширование весов нейронной сети и активаций слоев в local shared memory
+
+Было 2 FPS - стало 60.
